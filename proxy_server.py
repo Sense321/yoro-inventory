@@ -302,6 +302,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 f'&client_id={ZOHO_CLIENT_ID}'
                 f'&response_type=code'
                 f'&access_type=offline'
+                f'&prompt=consent'
                 f'&redirect_uri={urllib.parse.quote(ZOHO_REDIRECT_URI, safe="")}'
             )
             self.send_response(302)
@@ -311,44 +312,80 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         # ── Zoho OAuth — step 2: exchange code for tokens ────────────────
         if p == '/zoho/callback':
-            code = params.get('code', '')
+            code      = params.get('code', '')
+            error_val = params.get('error', '')
+            if error_val:
+                # Zoho returned an error (e.g. access_denied or invalid_redirect_uri)
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html')
+                self.end_headers()
+                self.wfile.write(f'<h2>Zoho auth error</h2><pre>{error_val}: {params.get("error_description","")}</pre><p>Please close this tab and try again.</p>'.encode())
+                return
             if not code:
                 self.send_response(400)
                 self.end_headers()
                 self.wfile.write(b'Missing authorization code')
                 return
             try:
+                post_data = urllib.parse.urlencode({
+                    'grant_type':    'authorization_code',
+                    'client_id':     ZOHO_CLIENT_ID,
+                    'client_secret': ZOHO_CLIENT_SECRET,
+                    'code':          code,
+                    'redirect_uri':  ZOHO_REDIRECT_URI,
+                })
                 token_req = urllib.request.Request(
                     f'{ZOHO_ACCOUNTS_URL}/oauth/v2/token',
-                    data=urllib.parse.urlencode({
-                        'grant_type':    'authorization_code',
-                        'client_id':     ZOHO_CLIENT_ID,
-                        'client_secret': ZOHO_CLIENT_SECRET,
-                        'code':          code,
-                        'redirect_uri':  ZOHO_REDIRECT_URI,
-                    }).encode(),
+                    data=post_data.encode(),
                     headers={'Content-Type': 'application/x-www-form-urlencoded'},
                     method='POST'
                 )
                 with urllib.request.urlopen(token_req, timeout=15) as r:
                     tok = json.loads(r.read())
+                print(f'[zoho/callback] token response keys: {list(tok.keys())}', flush=True)
                 if 'access_token' not in tok:
-                    self.send_response(500)
+                    # Show error visibly in browser so we can diagnose
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/html')
                     self.end_headers()
-                    self.wfile.write(f'Zoho token error: {tok}'.encode())
+                    self.wfile.write(f'<h2>Zoho token exchange failed</h2><pre>{json.dumps(tok, indent=2)}</pre><p>post_data sent: {post_data}</p>'.encode())
                     return
                 save_zoho_tokens({
                     'access_token':  tok['access_token'],
                     'refresh_token': tok.get('refresh_token', ''),
                     'expires_at':    int(time.time()) + tok.get('expires_in', 3600),
                 })
+                print(f'[zoho/callback] tokens saved. refresh_token present: {bool(tok.get("refresh_token"))}', flush=True)
                 self.send_response(302)
                 self.send_header('Location', '/?zoho_auth=success')
                 self.end_headers()
             except Exception as e:
-                self.send_response(302)
-                self.send_header('Location', f'/?zoho_auth=error&msg={urllib.parse.quote(str(e))}')
+                print(f'[zoho/callback] exception: {e}', flush=True)
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html')
                 self.end_headers()
+                self.wfile.write(f'<h2>Zoho callback exception</h2><pre>{e}</pre>'.encode())
+            return
+
+        # ── Zoho debug (temporary) ─────────────────────────────────────────
+        if p == '/zoho/debug':
+            user = self._require_auth()
+            if not user: return
+            tokens = load_zoho_tokens()
+            try:
+                db = load_db()
+                db_tokens = db.get('_zohoTokens', {})
+            except Exception as e:
+                db_tokens = f'error: {e}'
+            info = {
+                'DATA_DIR': DATA_DIR,
+                'ZOHO_TOKEN_FILE': ZOHO_TOKEN_FILE,
+                'token_file_exists': os.path.isfile(ZOHO_TOKEN_FILE),
+                'loaded_tokens_keys': list(tokens.keys()),
+                'has_refresh_token': bool(tokens.get('refresh_token')),
+                'db_zoho_keys': list(db_tokens.keys()) if isinstance(db_tokens, dict) else str(db_tokens),
+            }
+            json_response(self, 200, info)
             return
 
         # ── Zoho connection status ─────────────────────────────────────────
