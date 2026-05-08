@@ -2665,6 +2665,7 @@ let db={
   reorderTasks:[],
   wholesaleChannels:[],
   tasks:[],
+  landedCosts:[],
   inventoryAuditLog:[],
   preferences:{currency:'USD',taxName:'Tax',taxRate:0,preventNegativeStock:true,lowStockWarning:true,autoDeductOnAssembly:true,valuation:'FIFO'},
   skuMappings:{},
@@ -2963,6 +2964,8 @@ function loadDB(){
   // Migrate: tasks
   if(!db.tasks)db.tasks=[];
   if(!db.nextId.tasks)db.nextId.tasks=1;
+  // Migrate: landed costs
+  if(!db.landedCosts)db.landedCosts=[];
   // Migrate: virtual kit flag
   (db.items||[]).forEach(it=>{if(it.isVirtualKit===undefined)it.isVirtualKit=false;if(!it.kitComponents)it.kitComponents=[];});
   (db.compositeItems||[]).forEach(ci=>{if(ci.isVirtualKit===undefined)ci.isVirtualKit=false;if(!ci.kitComponents)ci.kitComponents=[];});
@@ -6002,7 +6005,8 @@ function renderReports(){
   const inventoryRpts=[
     ['Inventory Summary','📊'],['Committed Stock','📌'],['Active Items','✅'],
     ['Inventory Valuation Summary','💹'],['FIFO Cost Lot Tracking','🔢'],
-    ['Stock Summary','📦'],['Inventory Aging','⏱️'],['Assembly Summary','🏗️']
+    ['Stock Summary','📦'],['Inventory Aging','⏱️'],['Assembly Summary','🏗️'],
+    ['Landed Cost Summary','🚢'],['Landed Cost History','📋']
   ];
 
   document.getElementById('rpt-sales-body').innerHTML='<div style="padding:14px 16px">'+salesRpts.map(([n,i])=>rptCard(n,i)).join('')+'</div>';
@@ -6040,6 +6044,78 @@ function showReport(name){
   } else if(name==='Purchase Order Details'){
     const rows=db.purchaseOrders.map(p=>`<tr><td>${p.date}</td><td>${p.poNo}</td><td>${(db.vendors.find(v=>v.id===p.vendorId)||{name:'—'}).name}</td><td>${p.deliveryDate||'—'}</td><td>${fmt(p.amount)}</td><td>${badgeHtml(p.status)}</td><td>${p.received}</td><td>${p.billed}</td></tr>`).join('');
     content=`<table><thead><tr><th>Date</th><th>PO#</th><th>Vendor</th><th>Delivery Date</th><th>Amount</th><th>Status</th><th>Received</th><th>Billed</th></tr></thead><tbody>${rows}</tbody></table>`;
+  } else if(name==='Landed Cost Summary'){
+    if(!db.landedCosts||!db.landedCosts.length){
+      content=`<div style="text-align:center;padding:40px;color:var(--text-light)"><div style="font-size:32px;margin-bottom:12px">🚢</div><div style="font-size:15px;font-weight:600">No landed costs recorded yet</div><div style="font-size:13px;margin-top:8px">Add landed costs when creating a Bill linked to a PO.</div></div>`;
+    } else {
+      // Aggregate by SKU
+      const byItem={};
+      (db.landedCosts||[]).forEach(lc=>{
+        (lc.allocations||[]).forEach(a=>{
+          if(!byItem[a.sku||a.itemId]){byItem[a.sku||a.itemId]={itemName:a.itemName,sku:a.sku||'',totalLC:0,count:0,amounts:[]};}
+          byItem[a.sku||a.itemId].totalLC+=a.allocatedAmount;
+          byItem[a.sku||a.itemId].count++;
+          byItem[a.sku||a.itemId].amounts.push(a.allocatedAmount);
+        });
+      });
+      const rows=Object.values(byItem).sort((a,b)=>b.totalLC-a.totalLC).map(r=>{
+        const item=(db.items||[]).find(i=>i.sku===r.sku)||{};
+        const baseCost=item.costPrice||0;
+        const avgLC=r.totalLC/r.count;
+        return`<tr>
+          <td style="padding:7px 10px">${r.itemName}</td>
+          <td style="padding:7px 10px;color:var(--text-light)">${r.sku}</td>
+          <td style="padding:7px 10px;text-align:right">${fmt(baseCost)}</td>
+          <td style="padding:7px 10px;text-align:right">${fmt(avgLC)}</td>
+          <td style="padding:7px 10px;text-align:right">${fmt(r.totalLC)}</td>
+          <td style="padding:7px 10px;text-align:right;color:#7c3aed;font-weight:600">${fmt(baseCost+avgLC)}</td>
+          <td style="padding:7px 10px;text-align:center">${r.count}</td>
+        </tr>`;
+      }).join('');
+      const totalLC=(db.landedCosts||[]).reduce((s,lc)=>s+lc.totalAmount,0);
+      content=`<div style="margin-bottom:12px;font-size:13px;color:var(--text-light)">Total landed costs recorded: <strong style="color:#7c3aed">${fmt(totalLC)}</strong> across <strong>${db.landedCosts.length}</strong> bill(s)</div>
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:#f5f3ff;font-size:11px;text-transform:uppercase;letter-spacing:.5px">
+          <th style="padding:8px 10px;text-align:left">Item</th>
+          <th style="padding:8px 10px;text-align:left">SKU</th>
+          <th style="padding:8px 10px;text-align:right">Base Cost</th>
+          <th style="padding:8px 10px;text-align:right">Avg Landed Cost</th>
+          <th style="padding:8px 10px;text-align:right">Total LC Allocated</th>
+          <th style="padding:8px 10px;text-align:right">Est. Total Cost</th>
+          <th style="padding:8px 10px;text-align:center">Entries</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    }
+  } else if(name==='Landed Cost History'){
+    if(!db.landedCosts||!db.landedCosts.length){
+      content=`<div style="text-align:center;padding:40px;color:var(--text-light)"><div style="font-size:32px;margin-bottom:12px">📋</div><div style="font-size:15px;font-weight:600">No landed cost history yet</div></div>`;
+    } else {
+      const rows=[...(db.landedCosts||[])].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(lc=>{
+        const allocRows=(lc.allocations||[]).map(a=>`<tr style="background:#fafafa"><td style="padding:4px 10px 4px 28px;font-size:11px;color:var(--text-light)" colspan="2">${a.itemName} <span style="color:#9ca3af">(${a.sku})</span></td><td style="padding:4px 10px;font-size:11px;text-align:right">${a.qty} units</td><td style="padding:4px 10px;font-size:11px;text-align:right">${fmt(a.lineValue||0)}</td><td style="padding:4px 10px;font-size:11px;text-align:right;color:#7c3aed">${fmt(a.allocatedAmount)}</td><td></td></tr>`).join('');
+        return`<tr style="border-top:2px solid #e5e7eb">
+          <td style="padding:8px 10px;font-weight:600">${lc.date||'—'}</td>
+          <td style="padding:8px 10px">${lc.billNo||'—'}</td>
+          <td style="padding:8px 10px">${lc.poNo||'—'}</td>
+          <td style="padding:8px 10px">${lc.vendorName||'—'}</td>
+          <td style="padding:8px 10px">${lc.type}</td>
+          <td style="padding:8px 10px;text-align:right;font-weight:600">${fmt(lc.totalAmount)}</td>
+          <td style="padding:8px 10px;font-size:11px;color:var(--text-light)">${lc.allocationMethod==='quantity'?'By Qty':'By Value'}</td>
+        </tr>${allocRows}`;
+      }).join('');
+      content=`<table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:#f5f3ff;font-size:11px;text-transform:uppercase;letter-spacing:.5px">
+          <th style="padding:8px 10px;text-align:left">Date</th>
+          <th style="padding:8px 10px;text-align:left">Bill#</th>
+          <th style="padding:8px 10px;text-align:left">PO#</th>
+          <th style="padding:8px 10px;text-align:left">Vendor</th>
+          <th style="padding:8px 10px;text-align:left">Type</th>
+          <th style="padding:8px 10px;text-align:right">Amount</th>
+          <th style="padding:8px 10px;text-align:left">Method</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    }
   } else {
     content=`<div style="text-align:center;padding:40px;color:var(--text-light)"><div style="font-size:32px;margin-bottom:12px">📊</div><div style="font-size:15px;font-weight:600;margin-bottom:8px">${name}</div><div style="font-size:13px">Connect your data to generate this report.</div></div>`;
   }
@@ -7811,8 +7887,23 @@ function fpTableBlock(prefix,forPurchase=false,opts={}){
   <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
     <button class="btn-secondary" style="font-size:12px" onclick="fpAddRow('${prefix}',${forPurchase},${JSON.stringify(opts)})">+ Add New Row</button>
     <button class="btn-secondary" style="font-size:12px" onclick="fpAddRow('${prefix}',${forPurchase},${JSON.stringify(opts)})">Add Items in Bulk</button>
-    ${opts.landedCost?`<button class="btn-secondary" style="font-size:12px">+ Add Landed Cost</button>`:''}
+    ${opts.landedCost?`<button class="btn-secondary" style="font-size:12px" onclick="fpAddLandedCostRow('${prefix}')">+ Add Landed Cost</button>`:''}
   </div>
+  ${opts.landedCost?`
+  <div id="${prefix}-lc-section" style="margin-top:12px;display:none">
+    <div style="font-size:12px;font-weight:700;color:#7c3aed;margin-bottom:6px;padding:6px 0;border-top:1px solid #e5e7eb">Landed Costs</div>
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="background:#f5f3ff">
+        <th style="padding:6px 8px;text-align:left">Type</th>
+        <th style="padding:6px 8px;text-align:left">Description</th>
+        <th style="padding:6px 8px;text-align:right;width:120px">Amount</th>
+        <th style="padding:6px 8px;text-align:left;width:140px">Allocate By</th>
+        <th style="width:32px"></th>
+      </tr></thead>
+      <tbody id="${prefix}-lc-tbody"></tbody>
+    </table>
+    <div style="margin-top:6px;font-size:11px;color:#9ca3af">Landed costs are allocated across received items in the linked PO — they do <strong>not</strong> change base item cost.</div>
+  </div>`:''}
   <div class="fp-tot-wrap">
     <div class="fp-totals">
       <div class="fp-tot-row"><span>Sub Total</span><span id="${prefix}-sub-total">0.00</span></div>
@@ -9281,6 +9372,123 @@ function openBillPage(){
 </div>`);
 }
 
+// ── LANDED COST HELPERS ──
+let _lcRowCounter=0;
+function fpAddLandedCostRow(prefix){
+  const tbody=document.getElementById(prefix+'-lc-tbody');
+  const section=document.getElementById(prefix+'-lc-section');
+  if(!tbody||!section)return;
+  section.style.display='block';
+  _lcRowCounter++;
+  const rid=_lcRowCounter;
+  const tr=document.createElement('tr');
+  tr.id=prefix+'-lc-row-'+rid;
+  tr.innerHTML=`
+    <td style="padding:4px 6px">
+      <select id="${prefix}-lc-type-${rid}" class="form-input" style="font-size:12px;padding:3px 6px;width:100%">
+        <option>Freight</option><option>Duties/Tariffs</option><option>Shipping Materials</option><option>Insurance</option><option>Other</option>
+      </select>
+    </td>
+    <td style="padding:4px 6px"><input type="text" id="${prefix}-lc-desc-${rid}" class="form-input" style="font-size:12px;padding:3px 6px;width:100%" placeholder="Description"></td>
+    <td style="padding:4px 6px"><input type="number" id="${prefix}-lc-amt-${rid}" class="form-input" style="font-size:12px;padding:3px 6px;width:100%;text-align:right" placeholder="0.00" oninput="fpCalcLCTotal('${prefix}')"></td>
+    <td style="padding:4px 6px">
+      <select id="${prefix}-lc-method-${rid}" class="form-input" style="font-size:12px;padding:3px 6px;width:100%">
+        <option value="value">By Item Value</option><option value="quantity">By Quantity</option>
+      </select>
+    </td>
+    <td style="padding:4px 6px;text-align:center"><button onclick="document.getElementById('${prefix}-lc-row-${rid}').remove();fpCalcLCTotal('${prefix}')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:14px">✕</button></td>`;
+  tbody.appendChild(tr);
+  fpCalcLCTotal(prefix);
+}
+
+function fpCalcLCTotal(prefix){
+  const tbody=document.getElementById(prefix+'-lc-tbody');
+  if(!tbody)return;
+  let total=0;
+  tbody.querySelectorAll('input[type=number]').forEach(inp=>{total+=parseFloat(inp.value)||0;});
+  // Update grand total display to include landed costs
+  fpCalcTotals(prefix);
+}
+
+function fpGetLandedCostLines(prefix){
+  const tbody=document.getElementById(prefix+'-lc-tbody');
+  if(!tbody)return[];
+  const rows=tbody.querySelectorAll('tr[id]');
+  const lines=[];
+  rows.forEach(tr=>{
+    const rid=tr.id.split('-').pop();
+    const amt=parseFloat(document.getElementById(prefix+'-lc-amt-'+rid)?.value)||0;
+    if(amt===0)return;
+    lines.push({
+      type:document.getElementById(prefix+'-lc-type-'+rid)?.value||'Other',
+      description:document.getElementById(prefix+'-lc-desc-'+rid)?.value||'',
+      amount:amt,
+      allocationMethod:document.getElementById(prefix+'-lc-method-'+rid)?.value||'value'
+    });
+  });
+  return lines;
+}
+
+function allocateLandedCosts(poId,billId,billNo,date,vendorId,vendorName,lcLines){
+  if(!lcLines||!lcLines.length)return;
+  const po=(db.purchaseOrders||[]).find(p=>String(p.id)===String(poId));
+  if(!po||!po.lines||!po.lines.length)return;
+  if(!db.landedCosts)db.landedCosts=[];
+  // For each landed cost line, allocate across PO items
+  lcLines.forEach(lc=>{
+    const totalAmt=lc.amount;
+    const method=lc.allocationMethod||'value';
+    // Compute allocation basis per PO line
+    const poLines=po.lines.filter(l=>l.itemId&&(parseFloat(l.qty)||0)>0);
+    const basis=poLines.map(l=>{
+      if(method==='quantity')return{l,w:parseFloat(l.qty)||0};
+      return{l,w:(parseFloat(l.qty)||0)*(parseFloat(l.rate)||0)};
+    });
+    const totalBasis=basis.reduce((s,b)=>s+b.w,0);
+    if(totalBasis===0)return;
+    const allocations=basis.map(b=>({
+      itemId:b.l.itemId,
+      itemName:b.l.itemName||'',
+      sku:b.l.sku||'',
+      qty:parseFloat(b.l.qty)||0,
+      lineValue:(parseFloat(b.l.qty)||0)*(parseFloat(b.l.rate)||0),
+      allocatedAmount:Math.round((b.w/totalBasis)*totalAmt*100)/100
+    }));
+    // Fix rounding on last item
+    const allocSum=allocations.reduce((s,a)=>s+a.allocatedAmount,0);
+    const diff=Math.round((totalAmt-allocSum)*100)/100;
+    if(allocations.length&&diff!==0)allocations[allocations.length-1].allocatedAmount+=diff;
+    db.landedCosts.push({
+      id:Date.now()+Math.random(),
+      billId,billNo,
+      poId,poNo:po.poNo||po.number||'',
+      date,vendorId,vendorName,
+      type:lc.type,description:lc.description,
+      totalAmount:totalAmt,
+      allocationMethod:method,
+      allocations
+    });
+  });
+}
+
+function getItemLandedCostSummary(itemId){
+  if(!db.landedCosts||!db.landedCosts.length)return{latest:0,avg:0,total:0,count:0};
+  const relevant=db.landedCosts.filter(lc=>lc.allocations&&lc.allocations.some(a=>String(a.itemId)===String(itemId)));
+  if(!relevant.length)return{latest:0,avg:0,total:0,count:0};
+  const amounts=relevant.map(lc=>{
+    const a=lc.allocations.find(a=>String(a.itemId)===String(itemId));
+    return a?a.allocatedAmount:0;
+  });
+  const total=amounts.reduce((s,v)=>s+v,0);
+  return{
+    latest:amounts[amounts.length-1]||0,
+    avg:Math.round(total/relevant.length*100)/100,
+    total:Math.round(total*100)/100,
+    count:relevant.length,
+    history:relevant.map((lc,i)=>({billNo:lc.billNo,poNo:lc.poNo,date:lc.date,type:lc.type,amount:amounts[i]}))
+  };
+}
+
 function billCalcDue(){
   const dateEl=document.getElementById('bill-date');
   const termsEl=document.getElementById('bill-terms');
@@ -9314,25 +9522,38 @@ function saveBillPage(status='draft'){
       amount:parseFloat(document.getElementById(`bill-amt-${idx}`)?.textContent)||0
     });
   });
+  const lcLines=fpGetLandedCostLines('bill');
+  const lcTotal=lcLines.reduce((s,l)=>s+l.amount,0);
+  const billTotal=billAmt+lcTotal;
+  const poId=document.getElementById('bill-po')?.value||'';
+  const vendorName=(db.vendors||[]).find(v=>String(v.id)===String(vendor))?.name||'';
+  const billDate=document.getElementById('bill-date')?.value;
+  const billId=Date.now();
   db.bills.push({
-    id:Date.now(),
+    id:billId,
     billNo:billNum,number:billNum,
-    poId:document.getElementById('bill-po')?.value||'',
+    poId,
     vendorId:vendor,
-    vendorName:(db.vendors||[]).find(v=>String(v.id)===String(vendor))?.name||'',
+    vendorName,
     branch:document.getElementById('bill-branch')?.value||'Head Office',
-    date:document.getElementById('bill-date')?.value,
+    date:billDate,
     dueDate:document.getElementById('bill-due')?.value||'',
     terms:document.getElementById('bill-terms')?.value||'Due on Receipt',
     subject:document.getElementById('bill-subject')?.value||'',
     warehouseId:document.getElementById('bill-warehouse')?.value||'',
     notes:document.getElementById('bill-notes')?.value||'',
     lines,
+    landedCostLines:lcLines,
+    landedCostTotal:lcTotal,
     status,
-    amount:billAmt,total:billAmt,balanceDue:billAmt
+    amount:billTotal,total:billTotal,balanceDue:billTotal
   });
   if(db.nextId)db.nextId.bills=(db.nextId.bills||100)+1;
-  saveDB();closeFP();renderCurrentView();showToast('Bill saved');
+  // Allocate landed costs across PO items — does NOT change base item costPrice
+  if(lcLines.length&&poId){
+    allocateLandedCosts(poId,billId,billNum,billDate,vendor,vendorName,lcLines);
+  }
+  saveDB();closeFP();renderCurrentView();showToast('Bill saved'+(lcLines.length?` · Landed costs allocated across ${(db.purchaseOrders||[]).find(p=>String(p.id)===String(poId))?.lines?.length||0} item(s)`:''));
 }
 
 // ── PAYMENT MADE MODAL ──
@@ -10586,11 +10807,27 @@ ${df('Reorder Point',it.reorderPt)}${df('Stock Value',fmt(stockVal))}
 ${df('Valuation Method',it.valuationMethod||'FIFO')}${df('Inventory Account',it.inventoryAccount||'[14000] Inventory Asset')}
 </div>
 <div class="detail-section">Pricing</div>
+${(()=>{
+  const lcs=getItemLandedCostSummary(it.id);
+  const estTotal=it.costPrice+(lcs.avg||0);
+  const lcRows=lcs.history?lcs.history.slice(-5).reverse().map(h=>`<tr><td style="padding:3px 6px;font-size:11px">${h.date||'—'}</td><td style="padding:3px 6px;font-size:11px">${h.billNo||'—'}</td><td style="padding:3px 6px;font-size:11px">${h.poNo||'—'}</td><td style="padding:3px 6px;font-size:11px">${h.type||'—'}</td><td style="padding:3px 6px;font-size:11px;text-align:right">${fmt(h.amount)}</td></tr>`).join(''):'';
+  return`
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 20px">
-${df('Cost Price',fmt(it.costPrice))}${df('Sale Price',fmt(it.salePrice))}
-${df('Tax Preference',it.taxPref)}${df('Sales Account',it.salesAccount||'[40001] Sales')}
-${df('Purchase Account',it.purchaseAccount||'[50000] COGS')}${df('Preferred Vendor',v?.name||'—')}
+${df('Base Cost Price',fmt(it.costPrice))}${df('Sale Price',fmt(it.salePrice))}
+${df('Latest Landed Cost',lcs.latest?fmt(lcs.latest):'—')}${df('Avg Landed Cost',lcs.avg?fmt(lcs.avg):'—')}
+${df('Est. Total Cost',lcs.avg?`<strong style="color:#7c3aed">${fmt(estTotal)}</strong>`:fmt(it.costPrice))}${df('Tax Preference',it.taxPref)}
+${df('Sales Account',it.salesAccount||'[40001] Sales')}${df('Purchase Account',it.purchaseAccount||'[50000] COGS')}
+${df('Preferred Vendor',v?.name||'—')}${df('Landed Cost Entries',lcs.count||0)}
 </div>
+${lcs.count?`
+<div style="margin-top:10px">
+  <div style="font-size:11px;font-weight:700;color:#7c3aed;margin-bottom:4px">Landed Cost History (last 5)</div>
+  <table style="width:100%;border-collapse:collapse;font-size:11px">
+    <thead><tr style="background:#f5f3ff"><th style="padding:3px 6px;text-align:left">Date</th><th style="padding:3px 6px;text-align:left">Bill#</th><th style="padding:3px 6px;text-align:left">PO#</th><th style="padding:3px 6px;text-align:left">Type</th><th style="padding:3px 6px;text-align:right">Allocated</th></tr></thead>
+    <tbody>${lcRows}</tbody>
+  </table>
+</div>`:''}`;
+})()}
 <div class="detail-section">Inventory History</div>
 ${auditLogItemHtml(it.id)}
 ${it.isVirtualKit?(()=>{
