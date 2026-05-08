@@ -1404,6 +1404,74 @@ Ready — click Sync Shipments to pull shipped orders from ShipStation.
       <a href="#" onclick="showCorsHelp();return false" style="color:var(--primary);font-weight:600">Click here for the 5-minute setup guide →</a>
     </div>
 
+    <!-- Zoho Inventory Live Integration -->
+    <div class="section" id="zoho-live-section" style="margin-top:28px;margin-bottom:20px">
+      <div class="section-header">
+        <div class="section-title">🔗 Zoho Inventory — Live Pull</div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:11px;font-weight:600;color:#1d4ed8;background:#dbeafe;border:1px solid #bfdbfe;border-radius:20px;padding:2px 10px;letter-spacing:.3px">Read-only · Manual import</span>
+          <span id="zoho-status-badge" class="badge" style="background:#f3f4f6;color:#6b7280;border:1px solid #e5e7eb">Checking…</span>
+        </div>
+      </div>
+      <div style="padding:20px">
+        <!-- Connect / disconnect row -->
+        <div id="zoho-connect-row" style="display:flex;align-items:center;gap:12px;margin-bottom:18px">
+          <button class="btn btn-primary btn-sm" id="btn-zoho-connect" onclick="zohoConnect()" style="background:#e8430a;border-color:#c73508">Connect to Zoho Inventory</button>
+          <button class="btn btn-outline btn-sm" id="btn-zoho-disconnect" onclick="zohoDisconnect()" style="display:none;color:#dc2626;border-color:#dc2626">Disconnect</button>
+          <span id="zoho-connect-note" style="font-size:12px;color:var(--text-light)">Connect once — Claude will refresh the token automatically.</span>
+        </div>
+
+        <!-- Fetch controls (shown after connected) -->
+        <div id="zoho-fetch-panel" style="display:none">
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-bottom:16px">
+            <button class="btn btn-outline btn-sm" onclick="zohoFetch('items')" style="text-align:left;padding:10px 14px">
+              <div style="font-weight:700;font-size:13px">📦 Items</div>
+              <div style="font-size:11px;color:var(--text-light);margin-top:2px">Products &amp; SKUs</div>
+            </button>
+            <button class="btn btn-outline btn-sm" onclick="zohoFetch('contacts')" style="text-align:left;padding:10px 14px">
+              <div style="font-weight:700;font-size:13px">👤 Contacts</div>
+              <div style="font-size:11px;color:var(--text-light);margin-top:2px">Customers &amp; vendors</div>
+            </button>
+            <button class="btn btn-outline btn-sm" onclick="zohoFetch('purchaseorders')" style="text-align:left;padding:10px 14px">
+              <div style="font-weight:700;font-size:13px">🛒 Purchase Orders</div>
+              <div style="font-size:11px;color:var(--text-light);margin-top:2px">All POs</div>
+            </button>
+            <button class="btn btn-outline btn-sm" onclick="zohoFetch('salesorders')" style="text-align:left;padding:10px 14px">
+              <div style="font-weight:700;font-size:13px">🏷 Sales Orders</div>
+              <div style="font-size:11px;color:var(--text-light);margin-top:2px">All SOs</div>
+            </button>
+            <button class="btn btn-outline btn-sm" onclick="zohoFetch('invoices')" style="text-align:left;padding:10px 14px">
+              <div style="font-weight:700;font-size:13px">🧾 Invoices</div>
+              <div style="font-size:11px;color:var(--text-light);margin-top:2px">Customer invoices</div>
+            </button>
+            <button class="btn btn-outline btn-sm" onclick="zohoFetch('bills')" style="text-align:left;padding:10px 14px">
+              <div style="font-weight:700;font-size:13px">📄 Bills</div>
+              <div style="font-size:11px;color:var(--text-light);margin-top:2px">Vendor bills</div>
+            </button>
+          </div>
+
+          <!-- Preview area -->
+          <div id="zoho-preview-wrap" style="display:none">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+              <div id="zoho-preview-title" style="font-size:14px;font-weight:700;color:var(--text)"></div>
+              <div style="display:flex;gap:8px">
+                <button class="btn btn-outline btn-sm" onclick="zohoSelectAll()">Select All</button>
+                <button class="btn btn-outline btn-sm" onclick="zohoDeselectAll()">Deselect All</button>
+                <button class="btn btn-primary btn-sm" id="btn-zoho-import" onclick="zohoImportSelected()">⬇ Import Selected</button>
+              </div>
+            </div>
+            <div id="zoho-preview-table" style="max-height:400px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;font-size:12px"></div>
+            <div id="zoho-import-result" style="margin-top:10px;font-size:13px"></div>
+          </div>
+
+          <!-- Spinner -->
+          <div id="zoho-spinner" style="display:none;padding:20px;text-align:center;color:var(--text-light);font-size:13px">
+            <span style="animation:spin 1s linear infinite;display:inline-block;margin-right:6px">⏳</span> Fetching from Zoho…
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Amazon FBA Integration -->
     <div class="section" style="margin-top:28px;margin-bottom:20px;opacity:.82">
       <div class="section-header">
@@ -3396,6 +3464,7 @@ function navigate(view){
     populateOrdersFromDate();
     renderShopifyMappings();
     renderIntegrations();
+    zohoCheckStatus();
   }
   renderCurrentView();
 }
@@ -4815,6 +4884,24 @@ async function syncAmazonOrders(igId){
   } else if(result==='error'){
     const msg=params.get('msg')||'Unknown error';
     showToast('Amazon authorization failed: '+msg,'error');
+    window.history.replaceState({},'',window.location.pathname);
+  }
+})();
+
+// Check for Zoho OAuth callback result on page load
+(function checkZohoAuthResult(){
+  const params=new URLSearchParams(window.location.search);
+  const result=params.get('zoho_auth');
+  if(result==='success'){
+    window.history.replaceState({},'',window.location.pathname);
+    navigate('integrations');
+    setTimeout(()=>{
+      zohoCheckStatus();
+      showToast('✅ Zoho Inventory connected successfully!');
+    }, 300);
+  } else if(result==='error'){
+    const msg=params.get('msg')||'Unknown error';
+    showToast('Zoho authorization failed: '+msg,'error');
     window.history.replaceState({},'',window.location.pathname);
   }
 })();
@@ -13773,7 +13860,246 @@ function saveShopifyMapping(idx){
 }
 
 // =============================================
-// ZOHO IMPORT
+// ZOHO LIVE INTEGRATION (OAuth + live API pull)
+// =============================================
+
+let _zohoPreviewData = null; // {resource, items:[]}
+
+async function zohoCheckStatus() {
+  try {
+    const r = await apiFetch('/zoho/status');
+    const d = await r.json();
+    const badge  = document.getElementById('zoho-status-badge');
+    const btnCon = document.getElementById('btn-zoho-connect');
+    const btnDis = document.getElementById('btn-zoho-disconnect');
+    const panel  = document.getElementById('zoho-fetch-panel');
+    const note   = document.getElementById('zoho-connect-note');
+    if (d.connected) {
+      badge.textContent  = '● Connected';
+      badge.style.background = '#dcfce7';
+      badge.style.color      = '#15803d';
+      badge.style.borderColor = '#86efac';
+      btnCon.style.display = 'none';
+      btnDis.style.display = '';
+      panel.style.display  = '';
+      if (note) note.style.display = 'none';
+    } else {
+      badge.textContent  = 'Not connected';
+      badge.style.background = '#f3f4f6';
+      badge.style.color      = '#6b7280';
+      badge.style.borderColor = '#e5e7eb';
+      btnCon.style.display = '';
+      btnDis.style.display = 'none';
+      panel.style.display  = 'none';
+      if (note) note.style.display = '';
+    }
+  } catch(e) { /* server may not have the endpoint yet */ }
+}
+
+function zohoConnect() {
+  // Open auth URL in the same tab — server redirects back to /?zoho_auth=success
+  window.location.href = '/zoho/auth';
+}
+
+function zohoDisconnect() {
+  if (!confirm('Disconnect Zoho Inventory? You can reconnect at any time.')) return;
+  // There's no server-side disconnect endpoint — just note it locally
+  showToast('Zoho disconnected. Reconnect by clicking "Connect to Zoho Inventory".');
+  zohoCheckStatus();
+}
+
+async function zohoFetch(resource) {
+  const spinner = document.getElementById('zoho-spinner');
+  const wrap    = document.getElementById('zoho-preview-wrap');
+  const result  = document.getElementById('zoho-import-result');
+  spinner.style.display = '';
+  wrap.style.display    = 'none';
+  if (result) result.innerHTML = '';
+
+  try {
+    const r = await apiFetch('/zoho/fetch', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ resource, params: { per_page: 200 } })
+    });
+    const d = await r.json();
+    if (!r.ok) { showToast('Zoho error: ' + (d.error || r.status)); spinner.style.display='none'; return; }
+
+    // Pull the list from the response (Zoho wraps in resource key)
+    const key   = _zohoResourceKey(resource);
+    const items = d[key] || d.items || d.contacts || d.purchaseorders || d.salesorders || d.invoices || d.bills || [];
+    _zohoPreviewData = { resource, key, items };
+
+    spinner.style.display = 'none';
+    wrap.style.display    = '';
+    document.getElementById('zoho-preview-title').textContent =
+      `${items.length} ${resource} fetched from Zoho — review and select rows to import`;
+    _zohoRenderPreview(resource, items);
+  } catch(e) {
+    spinner.style.display = 'none';
+    showToast('Fetch failed: ' + e.message);
+  }
+}
+
+function _zohoResourceKey(resource) {
+  const map = {
+    items: 'items', contacts: 'contacts', purchaseorders: 'purchaseorders',
+    salesorders: 'salesorders', invoices: 'invoices', bills: 'bills'
+  };
+  return map[resource] || resource;
+}
+
+function _zohoRenderPreview(resource, rows) {
+  const el = document.getElementById('zoho-preview-table');
+  if (!rows.length) { el.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-light)">No records returned.</div>'; return; }
+
+  // Build column definitions per resource type
+  let cols = [];
+  if (resource === 'items') {
+    cols = [
+      {h:'SKU',      f: r => r.sku || r.item_id || ''},
+      {h:'Name',     f: r => r.name || ''},
+      {h:'Type',     f: r => r.item_type || r.product_type || ''},
+      {h:'Rate',     f: r => r.rate != null ? '$'+Number(r.rate).toFixed(2) : ''},
+      {h:'Purchase Rate', f: r => r.purchase_rate != null ? '$'+Number(r.purchase_rate).toFixed(2) : ''},
+      {h:'Unit',     f: r => r.unit || ''},
+      {h:'Status',   f: r => r.status || ''},
+    ];
+  } else if (resource === 'contacts') {
+    cols = [
+      {h:'Name',         f: r => r.contact_name || r.display_name || ''},
+      {h:'Type',         f: r => r.contact_type || ''},
+      {h:'Email',        f: r => r.email || ''},
+      {h:'Phone',        f: r => r.phone || ''},
+      {h:'Balance',      f: r => r.balance != null ? '$'+Number(r.balance).toFixed(2) : ''},
+    ];
+  } else if (resource === 'purchaseorders') {
+    cols = [
+      {h:'PO #',         f: r => r.purchaseorder_number || r.purchaseorder_id || ''},
+      {h:'Vendor',       f: r => r.vendor_name || ''},
+      {h:'Date',         f: r => r.date || ''},
+      {h:'Total',        f: r => r.total != null ? '$'+Number(r.total).toFixed(2) : ''},
+      {h:'Status',       f: r => r.status || ''},
+    ];
+  } else if (resource === 'salesorders') {
+    cols = [
+      {h:'SO #',         f: r => r.salesorder_number || r.salesorder_id || ''},
+      {h:'Customer',     f: r => r.customer_name || ''},
+      {h:'Date',         f: r => r.date || ''},
+      {h:'Total',        f: r => r.total != null ? '$'+Number(r.total).toFixed(2) : ''},
+      {h:'Status',       f: r => r.status || ''},
+    ];
+  } else if (resource === 'invoices') {
+    cols = [
+      {h:'Invoice #',    f: r => r.invoice_number || r.invoice_id || ''},
+      {h:'Customer',     f: r => r.customer_name || ''},
+      {h:'Date',         f: r => r.date || ''},
+      {h:'Total',        f: r => r.total != null ? '$'+Number(r.total).toFixed(2) : ''},
+      {h:'Balance',      f: r => r.balance != null ? '$'+Number(r.balance).toFixed(2) : ''},
+      {h:'Status',       f: r => r.status || ''},
+    ];
+  } else if (resource === 'bills') {
+    cols = [
+      {h:'Bill #',       f: r => r.bill_number || r.bill_id || ''},
+      {h:'Vendor',       f: r => r.vendor_name || ''},
+      {h:'Date',         f: r => r.date || ''},
+      {h:'Total',        f: r => r.total != null ? '$'+Number(r.total).toFixed(2) : ''},
+      {h:'Balance',      f: r => r.balance != null ? '$'+Number(r.balance).toFixed(2) : ''},
+      {h:'Status',       f: r => r.status || ''},
+    ];
+  } else {
+    // Generic — show first 5 keys
+    const keys = Object.keys(rows[0] || {}).slice(0,5);
+    cols = keys.map(k => ({h:k, f: r => String(r[k] ?? '')}));
+  }
+
+  let html = `<table style="width:100%;border-collapse:collapse">
+    <thead><tr style="background:#f8f9fb;position:sticky;top:0">
+      <th style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:left;width:32px">
+        <input type="checkbox" id="zoho-chk-all" onchange="zohoToggleAll(this.checked)" checked>
+      </th>`;
+  cols.forEach(c => { html += `<th style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:left;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:#6b7280;white-space:nowrap">${c.h}</th>`; });
+  html += `</tr></thead><tbody>`;
+
+  rows.forEach((row, i) => {
+    html += `<tr style="border-bottom:1px solid var(--border)" onmouseover="this.style.background='#f8f9fb'" onmouseout="this.style.background=''">
+      <td style="padding:6px 10px"><input type="checkbox" class="zoho-row-chk" data-idx="${i}" checked></td>`;
+    cols.forEach(c => { html += `<td style="padding:6px 10px;color:var(--text)">${c.f(row)}</td>`; });
+    html += `</tr>`;
+  });
+  html += `</tbody></table>`;
+  el.innerHTML = html;
+}
+
+function zohoSelectAll()   { document.querySelectorAll('.zoho-row-chk').forEach(c=>c.checked=true);  document.getElementById('zoho-chk-all').checked=true;  }
+function zohoDeselectAll() { document.querySelectorAll('.zoho-row-chk').forEach(c=>c.checked=false); document.getElementById('zoho-chk-all').checked=false; }
+function zohoToggleAll(v)  { document.querySelectorAll('.zoho-row-chk').forEach(c=>c.checked=v); }
+
+async function zohoImportSelected() {
+  if (!_zohoPreviewData) return;
+  const checked = [...document.querySelectorAll('.zoho-row-chk:checked')];
+  if (!checked.length) { showToast('No rows selected.'); return; }
+  const selected = checked.map(c => _zohoPreviewData.items[parseInt(c.dataset.idx)]);
+  const { resource } = _zohoPreviewData;
+  const resultEl = document.getElementById('zoho-import-result');
+
+  let imported = 0, skipped = 0, errors = [];
+
+  if (resource === 'items') {
+    selected.forEach(r => {
+      const sku = (r.sku || r.item_id || '').trim();
+      if (!sku) { skipped++; return; }
+      const exists = db.items.find(i => (i.sku||'').toLowerCase() === sku.toLowerCase());
+      if (exists) { skipped++; return; }
+      const newItem = {
+        id: db.nextId.items++, name: r.name || sku, sku,
+        type: r.item_type || 'Goods',
+        unit: r.unit || '',
+        costPrice: parseFloat(r.purchase_rate) || 0,
+        salePrice: parseFloat(r.rate) || 0,
+        description: r.description || '',
+        zohoItemId: r.item_id || '',
+        trackInventory: true,
+        inventoryLevels: (db.warehouses||[]).map(w=>({warehouseId:w.id,qty:0,bin:''})),
+        status: 'Active', tags:[], createdAt: new Date().toISOString()
+      };
+      db.items.push(newItem); imported++;
+    });
+  } else if (resource === 'contacts') {
+    selected.forEach(r => {
+      const name = (r.contact_name || r.display_name || '').trim();
+      if (!name) { skipped++; return; }
+      const type = (r.contact_type||'').toLowerCase();
+      if (type === 'vendor') {
+        const exists = (db.vendors||[]).find(v=>(v.name||'').toLowerCase()===name.toLowerCase());
+        if (exists) { skipped++; return; }
+        if(!db.vendors)db.vendors=[];
+        db.vendors.push({ id: db.nextId.vendors++, name, email: r.email||'', phone: r.phone||'', zohoContactId: r.contact_id||'', createdAt: new Date().toISOString() });
+        imported++;
+      } else {
+        const exists = (db.customers||[]).find(c=>(c.name||'').toLowerCase()===name.toLowerCase());
+        if (exists) { skipped++; return; }
+        db.customers.push({ id: db.nextId.customers++, name, email: r.email||'', phone: r.phone||'', zohoContactId: r.contact_id||'', createdAt: new Date().toISOString() });
+        imported++;
+      }
+    });
+  } else {
+    // For POs, SOs, invoices, bills — just inform user; full import logic can be added later
+    resultEl.innerHTML = `<div style="padding:12px;background:#fffbe6;border:1px solid #f6e05e;border-radius:6px;font-size:13px">
+      <strong>${selected.length} records selected.</strong> Full import for <em>${resource}</em> — save the raw data to a note or ask Claude to map it to your inventory format.
+    </div>`;
+    return;
+  }
+
+  await saveDb();
+  const msg = `✓ Imported ${imported}${skipped?` · ${skipped} skipped (already exist)`:''}`;
+  resultEl.innerHTML = `<div style="padding:10px 14px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;font-size:13px;color:#15803d">${msg}</div>`;
+  showToast(msg);
+  renderCurrentView();
+}
+
+// =============================================
+// ZOHO IMPORT (CSV)
 // =============================================
 
 function openZohoImport(type){

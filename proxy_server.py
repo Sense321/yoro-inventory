@@ -27,6 +27,15 @@ DB_FILE               = os.path.join(DATA_DIR, 'hhp_db.json')
 TOKEN_FILE            = os.path.join(DATA_DIR, 'shopify_oauth_token.txt')
 TOKEN_TTL             = 60 * 60 * 24 * 30  # 30 days
 
+# ── Zoho Inventory configuration ──────────────────────────────────────────────
+ZOHO_CLIENT_ID     = os.environ.get('ZOHO_CLIENT_ID',     '1000.HJJBMJEW8U0OGIB0EMVYU4819564LT')
+ZOHO_CLIENT_SECRET = os.environ.get('ZOHO_CLIENT_SECRET', '708e8905721002ea858f507515b0867fd164ea5c19')
+ZOHO_ORG_ID        = os.environ.get('ZOHO_ORG_ID',        '834798578')
+ZOHO_REDIRECT_URI  = os.environ.get('ZOHO_REDIRECT_URI',  'https://www.srqfulfillment.com/zoho/callback')
+ZOHO_TOKEN_FILE    = os.path.join(DATA_DIR, 'zoho_tokens.json')
+ZOHO_API_BASE      = 'https://www.zohoapis.com/inventory/v1'
+ZOHO_ACCOUNTS_URL  = 'https://accounts.zoho.com'
+
 # ── Shopify OAuth token helpers ────────────────────────────────────────────────
 def get_shopify_token():
     """Return best available Shopify token: file > db > env var."""
@@ -59,6 +68,47 @@ def save_shopify_token(token):
         save_db(db)
     except Exception:
         pass
+
+# ── Zoho token helpers ─────────────────────────────────────────────────────────
+def load_zoho_tokens():
+    if os.path.isfile(ZOHO_TOKEN_FILE):
+        try:
+            return json.load(open(ZOHO_TOKEN_FILE))
+        except Exception:
+            pass
+    return {}
+
+def save_zoho_tokens(tokens):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(ZOHO_TOKEN_FILE, 'w') as f:
+        json.dump(tokens, f, indent=2)
+
+def get_zoho_access_token():
+    """Return a valid Zoho access token, refreshing automatically if expired."""
+    tokens = load_zoho_tokens()
+    if not tokens.get('refresh_token'):
+        raise ValueError('Zoho not connected. Authorize via /zoho/auth first.')
+    # Refresh if expiring within 60 seconds
+    if tokens.get('expires_at', 0) - time.time() < 60:
+        refresh_req = urllib.request.Request(
+            f'{ZOHO_ACCOUNTS_URL}/oauth/v2/token',
+            data=urllib.parse.urlencode({
+                'grant_type':    'refresh_token',
+                'client_id':     ZOHO_CLIENT_ID,
+                'client_secret': ZOHO_CLIENT_SECRET,
+                'refresh_token': tokens['refresh_token'],
+            }).encode(),
+            headers={'Content-Type': 'application/x-www-form-urlencoded'},
+            method='POST'
+        )
+        with urllib.request.urlopen(refresh_req, timeout=15) as r:
+            tok = json.loads(r.read())
+        if 'access_token' not in tok:
+            raise ValueError(f'Zoho token refresh failed: {tok}')
+        tokens['access_token'] = tok['access_token']
+        tokens['expires_at']   = int(time.time()) + tok.get('expires_in', 3600)
+        save_zoho_tokens(tokens)
+    return tokens['access_token']
 
 # ── Default admin user (created on first run if no users.json) ─────────────────
 DEFAULT_USERS = [
@@ -221,6 +271,73 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 self.send_response(500); self.end_headers()
                 self.wfile.write(f'Error: {e}'.encode())
+            return
+
+        # ── Zoho OAuth — step 1: redirect browser to Zoho authorization ──
+        if p == '/zoho/auth':
+            scope   = 'ZohoInventory.FullAccess.all'
+            auth_url = (
+                f'{ZOHO_ACCOUNTS_URL}/oauth/v2/auth'
+                f'?scope={urllib.parse.quote(scope)}'
+                f'&client_id={ZOHO_CLIENT_ID}'
+                f'&response_type=code'
+                f'&access_type=offline'
+                f'&redirect_uri={urllib.parse.quote(ZOHO_REDIRECT_URI, safe="")}'
+            )
+            self.send_response(302)
+            self.send_header('Location', auth_url)
+            self.end_headers()
+            return
+
+        # ── Zoho OAuth — step 2: exchange code for tokens ────────────────
+        if p == '/zoho/callback':
+            code = params.get('code', '')
+            if not code:
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b'Missing authorization code')
+                return
+            try:
+                token_req = urllib.request.Request(
+                    f'{ZOHO_ACCOUNTS_URL}/oauth/v2/token',
+                    data=urllib.parse.urlencode({
+                        'grant_type':    'authorization_code',
+                        'client_id':     ZOHO_CLIENT_ID,
+                        'client_secret': ZOHO_CLIENT_SECRET,
+                        'code':          code,
+                        'redirect_uri':  ZOHO_REDIRECT_URI,
+                    }).encode(),
+                    headers={'Content-Type': 'application/x-www-form-urlencoded'},
+                    method='POST'
+                )
+                with urllib.request.urlopen(token_req, timeout=15) as r:
+                    tok = json.loads(r.read())
+                if 'access_token' not in tok:
+                    self.send_response(500)
+                    self.end_headers()
+                    self.wfile.write(f'Zoho token error: {tok}'.encode())
+                    return
+                save_zoho_tokens({
+                    'access_token':  tok['access_token'],
+                    'refresh_token': tok.get('refresh_token', ''),
+                    'expires_at':    int(time.time()) + tok.get('expires_in', 3600),
+                })
+                self.send_response(302)
+                self.send_header('Location', '/?zoho_auth=success')
+                self.end_headers()
+            except Exception as e:
+                self.send_response(302)
+                self.send_header('Location', f'/?zoho_auth=error&msg={urllib.parse.quote(str(e))}')
+                self.end_headers()
+            return
+
+        # ── Zoho connection status ─────────────────────────────────────────
+        if p == '/zoho/status':
+            user = self._require_auth()
+            if not user: return
+            tokens    = load_zoho_tokens()
+            connected = bool(tokens.get('refresh_token'))
+            json_response(self, 200, {'connected': connected})
             return
 
         # ── Shopify OAuth — step 1: redirect to Shopify authorization ─────
@@ -678,6 +795,42 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.send_response(e.code)
                 self.send_header('Content-Type', 'application/json')
                 self.send_cors(); self.end_headers()
+                self.wfile.write(resp_body)
+            except Exception as e:
+                json_response(self, 500, {'error': str(e)})
+            return
+
+        # ── Zoho live fetch proxy ──────────────────────────────────────────
+        if p == '/zoho/fetch':
+            user = self._require_auth()
+            if not user: return
+            try:
+                payload      = json.loads(body)
+                resource     = payload.get('resource', 'items')  # items, contacts, purchaseorders, etc.
+                extra_params = payload.get('params', {})
+                access_token = get_zoho_access_token()
+                qp = {'organization_id': ZOHO_ORG_ID}
+                qp.update(extra_params)
+                qs  = urllib.parse.urlencode(qp)
+                url = f'{ZOHO_API_BASE}/{resource}?{qs}'
+                req = urllib.request.Request(
+                    url,
+                    headers={'Authorization': f'Zoho-oauthtoken {access_token}',
+                             'Content-Type': 'application/json'}
+                )
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    resp_body = r.read()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_cors()
+                self.end_headers()
+                self.wfile.write(resp_body)
+            except urllib.error.HTTPError as e:
+                resp_body = e.read()
+                self.send_response(e.code)
+                self.send_header('Content-Type', 'application/json')
+                self.send_cors()
+                self.end_headers()
                 self.wfile.write(resp_body)
             except Exception as e:
                 json_response(self, 500, {'error': str(e)})
