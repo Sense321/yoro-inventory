@@ -71,6 +71,15 @@ def save_shopify_token(token):
 
 # ── Zoho token helpers ─────────────────────────────────────────────────────────
 def load_zoho_tokens():
+    # Primary: read from persistent db (survives redeploys)
+    try:
+        db = load_db()
+        t = db.get('_zohoTokens')
+        if t and t.get('refresh_token'):
+            return t
+    except Exception:
+        pass
+    # Fallback: local file (for local dev)
     if os.path.isfile(ZOHO_TOKEN_FILE):
         try:
             return json.load(open(ZOHO_TOKEN_FILE))
@@ -79,9 +88,20 @@ def load_zoho_tokens():
     return {}
 
 def save_zoho_tokens(tokens):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(ZOHO_TOKEN_FILE, 'w') as f:
-        json.dump(tokens, f, indent=2)
+    # Save into db so tokens survive Railway redeploys
+    try:
+        db = load_db()
+        db['_zohoTokens'] = tokens
+        save_db(db)
+    except Exception:
+        pass
+    # Also write local file as backup
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(ZOHO_TOKEN_FILE, 'w') as f:
+            json.dump(tokens, f, indent=2)
+    except Exception:
+        pass
 
 def get_zoho_access_token():
     """Return a valid Zoho access token, refreshing automatically if expired."""
