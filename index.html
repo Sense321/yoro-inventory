@@ -5512,69 +5512,74 @@ function renderPriceLists(){
 function completeAssembly(aoId){
   const ao=db.assemblyOrders.find(x=>x.id===aoId);if(!ao)return;
   if(ao.status==='Completed'){showToast('Already completed','warning');return;}
-  const bom=(db.boms||[]).find(b=>String(b.id)===String(ao.bomId));
-  if(!bom){showToast('BOM not found for this assembly','warning');return;}
+  // Support both old bomId-based and new compositeItemId-based orders
+  let ci=null;
+  if(ao.compositeItemId){
+    ci=(db.compositeItems||[]).find(i=>i.id===ao.compositeItemId||String(i.id)===String(ao.compositeItemId));
+  }
+  // Fallback: legacy bomId approach
+  if(!ci&&ao.bomId){
+    const bom=(db.boms||[]).find(b=>String(b.id)===String(ao.bomId));
+    if(bom){ci=bom;} // treat bom as ci-like object for legacy
+  }
+  if(!ci){showToast('No BOM / composite item found for this assembly order','warning');return;}
+  const components=ci.components||[];
+  if(!components.length){showToast('No components defined — cannot complete assembly','warning');return;}
   const totalQty=parseFloat(ao.qty)||1;
-  // Pre-flight: check for components that would go negative
+  const whId=ao.warehouseId?String(ao.warehouseId):null;
+  // Pre-flight: check components that would go negative
   const negComps=[];
-  (bom.components||[]).forEach(comp=>{
+  components.forEach(comp=>{
     const deductQty=(parseFloat(comp.qty)||0)*totalQty;
     if(!deductQty)return;
-    const cItem=db.items.find(i=>i.id===comp.itemId)||(db.compositeItems||[]).find(i=>i.id===comp.itemId);
-    if(cItem&&(parseFloat(cItem.onHand)||0)-deductQty<0){
-      negComps.push({item:cItem,current:parseFloat(cItem.onHand)||0,after:(parseFloat(cItem.onHand)||0)-deductQty,needed:deductQty});
+    const cItem=resolveBOMItem(comp.itemId,comp.src);
+    if(!cItem)return;
+    const currentStock=parseFloat(cItem.onHand)||0;
+    if(currentStock-deductQty<0){
+      negComps.push({item:cItem,current:currentStock,after:currentStock-deductQty,needed:deductQty});
     }
   });
   let assemblyApprovalReason=null;
   if(negComps.length){
-    const list=negComps.map(n=>`• ${n.item.name}: ${n.current} → ${n.after} (need ${n.needed})`).join('\n');
+    const list=negComps.map(n=>`• ${n.item.name}: ${n.current} on hand, need ${n.needed} (would be ${n.after})`).join('\n');
     const pw=prompt(`⚠️ INSUFFICIENT STOCK\n\nThese components will go negative:\n${list}\n\nEnter admin password to override:`);
     if(!pw){showToast('Assembly cancelled — insufficient stock','warning');return;}
     if(pw!==APP_PASSWORD){alert('Incorrect password.');showToast('Assembly cancelled','warning');return;}
-    const r=prompt('Enter reason for negative inventory (required):');
+    const r=prompt('Enter reason for proceeding with negative inventory (required):');
     if(!r||!r.trim()){alert('Reason required.');return;}
     assemblyApprovalReason=r.trim();
   }
-  // Deduct each component from inventory
+  // Deduct each component from inventory (from the assembly warehouse)
   const log=[];
-  (bom.components||[]).forEach(comp=>{
+  components.forEach(comp=>{
     const deductQty=(parseFloat(comp.qty)||0)*totalQty;
     if(!deductQty)return;
-    const cItem=db.items.find(i=>i.id===comp.itemId)||(db.compositeItems||[]).find(i=>i.id===comp.itemId);
+    const cItem=resolveBOMItem(comp.itemId,comp.src);
     if(cItem){
-      _deductItemStock(cItem,deductQty,null,{type:'assembly',approvalReason:assemblyApprovalReason,reason:'Assembly: '+(ao.orderNo||'')});
-      log.push(`−${deductQty} ${cItem.name}`);
+      _deductItemStock(cItem,deductQty,whId,{type:'assembly',approvalReason:assemblyApprovalReason,reason:'Assembly: '+(ao.orderNo||'')});
+      log.push(`−${deductQty} × ${cItem.name}`);
     }
   });
-  // Add finished item to inventory
-  const finishedItem=db.items.find(i=>String(i.id)===String(bom.itemId));
-  if(finishedItem){
-    const addQty=(parseFloat(bom.qty)||1)*totalQty;
-    finishedItem.onHand=(parseFloat(finishedItem.onHand)||0)+addQty;
-    if(finishedItem.warehouseStock){
-      const whKeys=Object.keys(finishedItem.warehouseStock);
-      if(whKeys.length){finishedItem.warehouseStock[whKeys[0]]=(parseFloat(finishedItem.warehouseStock[whKeys[0]])||0)+addQty;}
-    }
-    log.push(`+${addQty} ${finishedItem.name} (finished)`);
+  // Add finished composite item to inventory in assembly warehouse
+  const addQty=totalQty;
+  ci.onHand=(parseFloat(ci.onHand)||0)+addQty;
+  if(whId){
+    if(!ci.warehouseStock)ci.warehouseStock={};
+    ci.warehouseStock[whId]=(parseFloat(ci.warehouseStock[whId])||0)+addQty;
   }
+  log.push(`+${addQty} × ${ci.name} (finished)`);
+  // Update cost
+  const newCost=Math.round(calcAssemblyCost(ci)*100)/100;
+  if(newCost>0)ci.costPrice=newCost;
   ao.status='Completed';
   ao.manufacturedQty=totalQty;
+  ao.cost=Math.round(newCost*totalQty*100)/100;
   ao.completedAt=new Date().toISOString();
-  // Update finished item cost = BOM material cost per unit
-  if(finishedItem){
-    const matCost=(bom.components||[]).reduce((s,c)=>{
-      const cItem=resolveBOMItem(c.itemId,c.src);
-      return s+(cItem?parseFloat(cItem.costPrice)||0:0)*(parseFloat(c.qty)||0);
-    },0);
-    const laborPerUnit=parseFloat(bom.laborCost)||0;
-    const bomOutQty=parseFloat(bom.qty)||1;
-    finishedItem.costPrice=Math.round(((matCost+laborPerUnit)/bomOutQty)*100)/100;
-  }
   saveDB();
   recalcDerivedCosts();
   renderCurrentView();
-  showToast(`Assembly ${ao.orderNo} completed — inventory updated`);
-  if(log.length) console.log('Assembly inventory changes:',log.join(', '));
+  showToast(`✓ Assembly ${ao.orderNo} completed — inventory updated`);
+  console.log('Assembly inventory changes:',log.join(', '));
 }
 
 function renderAssemblyOrders(){
@@ -5582,13 +5587,21 @@ function renderAssemblyOrders(){
   if(currentStatus&&currentStatus!=='All')filtered=filtered.filter(ao=>ao.status===currentStatus);
   filtered=applySort(filtered,'assembly-orders',{orderNo:ao=>ao.orderNo,date:ao=>ao.date,compositeItem:ao=>ao.compositeItemId,qty:ao=>ao.qty,manufacturedQty:ao=>ao.manufacturedQty||0,cost:ao=>ao.cost||0,status:ao=>ao.status,warehouse:ao=>(db.warehouses.find(w=>w.id===ao.warehouseId)||{}).name||''});
   let html=filtered.map(ao=>{
-    const w=db.warehouses.find(x=>x.id===ao.warehouseId);
-    const bom=(db.boms||[]).find(b=>String(b.id)===String(ao.bomId));
-    const finItem=bom?db.items.find(i=>String(i.id)===String(bom.itemId)):null;
+    const w=db.warehouses.find(x=>String(x.id)===String(ao.warehouseId));
+    // Resolve item name: new compositeItemId or legacy bomId
+    let itemName=ao.compositeItemName||'—';
+    if(ao.compositeItemId){
+      const ci=(db.compositeItems||[]).find(i=>String(i.id)===String(ao.compositeItemId));
+      if(ci)itemName=ci.name;
+    } else if(ao.bomId){
+      const bom=(db.boms||[]).find(b=>String(b.id)===String(ao.bomId));
+      if(bom)itemName=bom.name;
+    }
+    const batchBadge=ao.batch?`<span style="font-size:10px;background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0;border-radius:3px;padding:1px 4px;margin-left:4px">${ao.batch}</span>`:'';
     const completeBtn=ao.status!=='Completed'
       ?`<button class="btn btn-sm btn-primary" style="font-size:11px;padding:2px 8px" onclick="completeAssembly(${ao.id})">✓ Complete</button>`
       :`<span style="font-size:11px;color:#16a34a">✓ Done</span>`;
-    return`<tr><td>${ao.orderNo}</td><td>${ao.date}</td><td style="font-size:12px">${finItem?finItem.name:(bom?bom.name:'—')}</td><td>${ao.qty}</td><td>${ao.manufacturedQty||0}</td><td>${fmt(ao.cost||0)}</td><td>${badgeHtml(ao.status)}</td><td>${w?.name||'—'}</td><td>${completeBtn}</td></tr>`;
+    return`<tr><td>${ao.orderNo}${batchBadge}</td><td>${ao.date}</td><td style="font-size:12px">${itemName}</td><td>${ao.qty}</td><td>${ao.manufacturedQty||0}</td><td>${fmt(ao.cost||0)}</td><td>${badgeHtml(ao.status)}</td><td>${w?.name||'—'}</td><td>${completeBtn}</td></tr>`;
   }).join('');
   document.getElementById('assembly-orders-table').innerHTML=html||'<tr class="empty-row"><td colspan="9">No assembly orders</td></tr>';
   makeSortable('assembly-orders-table','assembly-orders',[{key:'orderNo'},{key:'date'},{},{key:'qty'},{key:'manufacturedQty'},{key:'cost'},{key:'status'},{key:'warehouse'},{}],renderAssemblyOrders);
@@ -10369,39 +10382,136 @@ function adjCalcDiff(idx){
 
 // ── ASSEMBLY ORDER MODAL ──
 function openAssemblyModal(){
-  const bomOpts=(db.boms||[]).map(b=>`<option value="${b.id}">${b.name}</option>`).join('');
+  const whOpts=(db.warehouses||[]).map(w=>`<option value="${w.id}">${w.name}</option>`).join('');
+  const asmNo='ASM-'+String(Date.now()).slice(-5);
   showModal('New Assembly Order',`
-    <div class="form-row"><label class="form-label">Assembly# *</label><input class="form-input" id="asm-number" value="ASM-${String(Date.now()).slice(-5)}"></div>
-    <div class="form-row"><label class="form-label">Item (Bill of Materials) *</label>
-      <select class="form-input" id="asm-bom"><option value="">-- Select BOM --</option>${bomOpts}</select>
+    <div class="form-row"><label class="form-label">Assembly # *</label>
+      <input class="form-input" id="asm-number" value="${asmNo}">
     </div>
-    <div class="form-row"><label class="form-label">Quantity to Assemble</label>
-      <input class="form-input" type="number" id="asm-qty" value="1" min="1">
+    <div class="form-row"><label class="form-label">Item to Assemble *</label>
+      <div style="position:relative">
+        <input class="form-input" id="asm-item-search" placeholder="Search by name or SKU…" autocomplete="off"
+          oninput="_asmSearchItems(this.value)" onfocus="_asmSearchItems(this.value)">
+        <input type="hidden" id="asm-item-id">
+        <div id="asm-item-dropdown" style="display:none;position:absolute;z-index:999;background:#fff;border:1px solid #e2e6ea;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.12);max-height:220px;overflow-y:auto;width:100%;top:100%;left:0"></div>
+      </div>
     </div>
-    <div class="form-row"><label class="form-label">Scheduled Date</label><input class="form-input" type="date" id="asm-date" value="${new Date().toISOString().slice(0,10)}"></div>
-    <div class="form-row"><label class="form-label">Warehouse</label>
-      <select class="form-input" id="asm-warehouse">${(db.warehouses||[{name:'Main Warehouse'}]).map(w=>`<option>${w.name}</option>`).join('')}</select>
+    <div id="asm-bom-preview" style="display:none;background:#f8fafc;border:1px solid #e2e6ea;border-radius:6px;padding:10px 12px;margin:4px 0 8px;font-size:12px"></div>
+    <div class="form-row"><label class="form-label">Quantity to Assemble *</label>
+      <input class="form-input" type="number" id="asm-qty" value="1" min="1" oninput="_asmUpdatePreview()">
     </div>
-    <div class="form-row"><label class="form-label">Notes</label><textarea class="form-input" id="asm-notes" rows="2"></textarea></div>
+    <div class="form-row"><label class="form-label">Scheduled Date</label>
+      <input class="form-input" type="date" id="asm-date" value="${new Date().toISOString().slice(0,10)}">
+    </div>
+    <div class="form-row"><label class="form-label">Assembly Into Warehouse *</label>
+      <select class="form-input" id="asm-warehouse">${whOpts}</select>
+    </div>
+    <div class="form-row"><label class="form-label">Batch / Lot Number <span style="font-size:11px;color:var(--text-light)">(optional)</span></label>
+      <input class="form-input" id="asm-batch" placeholder="e.g. BATCH-2026-001">
+    </div>
+    <div class="form-row"><label class="form-label">Notes</label>
+      <textarea class="form-input" id="asm-notes" rows="2"></textarea>
+    </div>
   `,{
     saveFn:()=>{
-      if(!document.getElementById('asm-bom').value){alert('BOM required');return;}
+      const ciId=parseInt(document.getElementById('asm-item-id').value||'0');
+      if(!ciId){showToast('Select an item to assemble','warning');return false;}
+      const ci=(db.compositeItems||[]).find(i=>i.id===ciId);
+      if(!ci){showToast('Item not found','warning');return false;}
+      if(!(ci.components||[]).length){showToast('This item has no BOM components defined — cannot create assembly','warning');return false;}
+      const asmNum=document.getElementById('asm-number').value.trim()||asmNo;
+      const whId=document.getElementById('asm-warehouse').value;
+      const qty=parseFloat(document.getElementById('asm-qty').value)||1;
       if(!db.assemblyOrders)db.assemblyOrders=[];
-      const asmNum=document.getElementById('asm-number').value;
       db.assemblyOrders.push({
         id:Date.now(),
-        orderNo:asmNum,number:asmNum,
-        bomId:document.getElementById('asm-bom').value,
-        qty:parseFloat(document.getElementById('asm-qty').value)||1,
+        orderNo:asmNum,
+        compositeItemId:ciId,
+        compositeItemName:ci.name,
+        qty,
         manufacturedQty:0,
-        cost:0,
+        cost:Math.round(calcAssemblyCost(ci)*qty*100)/100,
         date:document.getElementById('asm-date').value,
-        warehouseId:document.getElementById('asm-warehouse').value,
-        status:'In Progress'
+        warehouseId:parseInt(whId)||whId,
+        batch:document.getElementById('asm-batch').value.trim(),
+        notes:document.getElementById('asm-notes').value.trim(),
+        status:'In Progress',
+        createdAt:new Date().toISOString()
       });
       saveDB();renderCurrentView();
     }
   });
+  // Set default warehouse to Hey Honey US if present
+  setTimeout(()=>{
+    const usWh=(db.warehouses||[]).find(w=>w.name&&w.name.toLowerCase().includes('hey honey us'));
+    if(usWh)document.getElementById('asm-warehouse').value=usWh.id;
+  },50);
+}
+
+function _asmSearchItems(q){
+  const dd=document.getElementById('asm-item-dropdown');
+  const allCI=(db.compositeItems||[]).filter(ci=>(ci.components||[]).length>0&&ci.status!=='Inactive');
+  const sq=q.toLowerCase().trim();
+  const results=sq?allCI.filter(ci=>ci.name.toLowerCase().includes(sq)||(ci.sku||'').toLowerCase().includes(sq)):allCI.slice(0,40);
+  if(!results.length){
+    dd.innerHTML='<div style="padding:10px 12px;color:#9ca3af;font-size:12px">No items with BOM found</div>';
+    dd.style.display='block';return;
+  }
+  dd.innerHTML=results.map(ci=>`
+    <div onclick="_asmSelectItem(${ci.id},'${(ci.name+' ('+ci.sku+')').replace(/'/g,'&#39;')}')"
+      style="padding:8px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid #f0f0f0"
+      onmouseover="this.style.background='#f5f3ff'" onmouseout="this.style.background=''">
+      <span style="font-weight:500">${ci.name}</span>
+      <span style="color:#9ca3af;font-size:11px;margin-left:6px">${ci.sku||''}</span>
+      <span style="color:#7c3aed;font-size:10px;margin-left:6px">${(ci.components||[]).length} components</span>
+    </div>`).join('');
+  dd.style.display='block';
+  // Close on outside click
+  setTimeout(()=>document.addEventListener('click',function _close(e){
+    if(!document.getElementById('asm-item-search')?.contains(e.target)&&!dd.contains(e.target)){dd.style.display='none';document.removeEventListener('click',_close);}
+  }),100);
+}
+
+function _asmSelectItem(id,label){
+  document.getElementById('asm-item-id').value=id;
+  document.getElementById('asm-item-search').value=label;
+  document.getElementById('asm-item-dropdown').style.display='none';
+  _asmUpdatePreview();
+}
+
+function _asmUpdatePreview(){
+  const ciId=parseInt(document.getElementById('asm-item-id').value||'0');
+  const qty=parseFloat(document.getElementById('asm-qty')?.value)||1;
+  const preview=document.getElementById('asm-bom-preview');
+  if(!preview)return;
+  const ci=(db.compositeItems||[]).find(i=>i.id===ciId);
+  if(!ci||(!(ci.components||[]).length)){preview.style.display='none';return;}
+  const rows=(ci.components||[]).map(c=>{
+    const item=resolveBOMItem(c.itemId,c.src);
+    const needed=(parseFloat(c.qty)||0)*qty;
+    const avail=parseFloat(item?.onHand)||0;
+    const short=avail<needed;
+    return`<tr>
+      <td style="padding:2px 6px">${item?item.name:'Unknown'}</td>
+      <td style="padding:2px 6px;text-align:center">${parseFloat(c.qty)||0}</td>
+      <td style="padding:2px 6px;text-align:center">${needed}</td>
+      <td style="padding:2px 6px;text-align:center;${short?'color:#e53e3e;font-weight:600':''}">${avail}${short?' ⚠️':''}</td>
+    </tr>`;
+  }).join('');
+  const totalCost=Math.round(calcAssemblyCost(ci)*qty*100)/100;
+  preview.innerHTML=`
+    <div style="font-weight:600;margin-bottom:6px;color:#1a1a2e">BOM Preview — ${qty} × ${ci.name}</div>
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr style="color:#718096">
+        <th style="padding:2px 6px;text-align:left;font-weight:500">Component</th>
+        <th style="padding:2px 6px;text-align:center;font-weight:500">Per Unit</th>
+        <th style="padding:2px 6px;text-align:center;font-weight:500">Needed</th>
+        <th style="padding:2px 6px;text-align:center;font-weight:500">On Hand</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div style="margin-top:6px;color:#6b7280">Est. cost: <strong>${fmt(totalCost)}</strong></div>`;
+  preview.style.display='block';
 }
 
 // ── BILL OF MATERIALS MODAL ──
