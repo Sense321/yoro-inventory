@@ -5597,11 +5597,24 @@ function renderAssemblyOrders(){
       const bom=(db.boms||[]).find(b=>String(b.id)===String(ao.bomId));
       if(bom)itemName=bom.name;
     }
-    const batchBadge=ao.batch?`<span style="font-size:10px;background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0;border-radius:3px;padding:1px 4px;margin-left:4px">${ao.batch}</span>`:'';
-    const completeBtn=ao.status!=='Completed'
-      ?`<button class="btn btn-sm btn-primary" style="font-size:11px;padding:2px 8px" onclick="completeAssembly(${ao.id})">✓ Complete</button>`
-      :`<span style="font-size:11px;color:#16a34a">✓ Done</span>`;
-    return`<tr><td>${ao.orderNo}${batchBadge}</td><td>${ao.date}</td><td style="font-size:12px">${itemName}</td><td>${ao.qty}</td><td>${ao.manufacturedQty||0}</td><td>${fmt(ao.cost||0)}</td><td>${badgeHtml(ao.status)}</td><td>${w?.name||'—'}</td><td>${completeBtn}</td></tr>`;
+    const batchBadge=ao.batch?`<span style="font-size:10px;background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0;border-radius:3px;padding:1px 5px;margin-left:4px">${ao.batch}</span>`:'';
+    const dueDate=ao.dueDate||ao.date||'—';
+    const isAssembled=ao.status==='Assembled'||ao.status==='Completed';
+    const actionBtns=isAssembled
+      ?`<span style="font-size:11px;color:#16a34a;font-weight:600">✓ Assembled</span><br><span style="font-size:10px;color:#6b7280">${ao.assembledBy?'by '+ao.assembledBy:''}</span>`
+      :`<button class="btn btn-sm" style="font-size:11px;padding:2px 7px;background:#16a34a;color:#fff;border:none;border-radius:4px;cursor:pointer;margin-bottom:2px" onclick="openMarkAssembledModal(${ao.id})">✓ Mark Assembled</button>`;
+    const printBtn=`<button class="btn btn-sm btn-secondary" style="font-size:11px;padding:2px 7px;margin-left:4px" onclick="printAssemblyOrder(${ao.id})">🖨</button>`;
+    return`<tr>
+      <td><span style="font-weight:500">${ao.orderNo}</span>${batchBadge}</td>
+      <td>${dueDate}</td>
+      <td style="font-size:12px">${itemName}</td>
+      <td>${ao.qty}</td>
+      <td>${ao.manufacturedQty||0}</td>
+      <td>${fmt(ao.cost||0)}</td>
+      <td>${badgeHtml(isAssembled?'Completed':ao.status)}</td>
+      <td>${w?.name||'—'}</td>
+      <td style="white-space:nowrap">${actionBtns}${printBtn}</td>
+    </tr>`;
   }).join('');
   document.getElementById('assembly-orders-table').innerHTML=html||'<tr class="empty-row"><td colspan="9">No assembly orders</td></tr>';
   makeSortable('assembly-orders-table','assembly-orders',[{key:'orderNo'},{key:'date'},{},{key:'qty'},{key:'manufacturedQty'},{key:'cost'},{key:'status'},{key:'warehouse'},{}],renderAssemblyOrders);
@@ -10384,91 +10397,104 @@ function adjCalcDiff(idx){
 function openAssemblyModal(){
   const whOpts=(db.warehouses||[]).map(w=>`<option value="${w.id}">${w.name}</option>`).join('');
   const asmNo='ASM-'+String(Date.now()).slice(-5);
-  showModal('New Assembly Order',`
-    <div class="form-row"><label class="form-label">Assembly # *</label>
-      <input class="form-input" id="asm-number" value="${asmNo}">
+  const today=new Date().toISOString().slice(0,10);
+  // Use openModal (no footer save btn) — we add our own Save button
+  openModal('New Assembly Order',`
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 16px">
+      <div class="form-row" style="grid-column:1/2"><label class="form-label">Assembly # *</label>
+        <input class="form-input" id="asm-number" value="${asmNo}">
+      </div>
+      <div class="form-row" style="grid-column:2/3"><label class="form-label">Due Date (Needed By)</label>
+        <input class="form-input" type="date" id="asm-due" value="${today}">
+      </div>
     </div>
     <div class="form-row"><label class="form-label">Item to Assemble *</label>
       <div style="position:relative">
-        <input class="form-input" id="asm-item-search" placeholder="Search by name or SKU…" autocomplete="off"
+        <input class="form-input" id="asm-item-search" placeholder="Type name or SKU to search…" autocomplete="off"
           oninput="_asmSearchItems(this.value)" onfocus="_asmSearchItems(this.value)">
         <input type="hidden" id="asm-item-id">
-        <div id="asm-item-dropdown" style="display:none;position:absolute;z-index:999;background:#fff;border:1px solid #e2e6ea;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.12);max-height:220px;overflow-y:auto;width:100%;top:100%;left:0"></div>
+        <div id="asm-item-dropdown" style="display:none;position:absolute;z-index:9999;background:#fff;border:1px solid #e2e6ea;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.15);max-height:240px;overflow-y:auto;width:100%;top:calc(100% + 2px);left:0"></div>
       </div>
     </div>
     <div id="asm-bom-preview" style="display:none;background:#f8fafc;border:1px solid #e2e6ea;border-radius:6px;padding:10px 12px;margin:4px 0 8px;font-size:12px"></div>
-    <div class="form-row"><label class="form-label">Quantity to Assemble *</label>
-      <input class="form-input" type="number" id="asm-qty" value="1" min="1" oninput="_asmUpdatePreview()">
-    </div>
-    <div class="form-row"><label class="form-label">Scheduled Date</label>
-      <input class="form-input" type="date" id="asm-date" value="${new Date().toISOString().slice(0,10)}">
-    </div>
-    <div class="form-row"><label class="form-label">Assembly Into Warehouse *</label>
-      <select class="form-input" id="asm-warehouse">${whOpts}</select>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 16px">
+      <div class="form-row"><label class="form-label">Qty to Assemble *</label>
+        <input class="form-input" type="number" id="asm-qty" value="1" min="1" oninput="_asmUpdatePreview()">
+      </div>
+      <div class="form-row"><label class="form-label">Assembly Into Warehouse *</label>
+        <select class="form-input" id="asm-warehouse">${whOpts}</select>
+      </div>
     </div>
     <div class="form-row"><label class="form-label">Batch / Lot Number <span style="font-size:11px;color:var(--text-light)">(optional)</span></label>
       <input class="form-input" id="asm-batch" placeholder="e.g. BATCH-2026-001">
     </div>
-    <div class="form-row"><label class="form-label">Notes</label>
+    <div class="form-row"><label class="form-label">Notes / Instructions</label>
       <textarea class="form-input" id="asm-notes" rows="2"></textarea>
     </div>
-  `,{
-    saveFn:()=>{
-      const ciId=parseInt(document.getElementById('asm-item-id').value||'0');
-      if(!ciId){showToast('Select an item to assemble','warning');return false;}
-      const ci=(db.compositeItems||[]).find(i=>i.id===ciId);
-      if(!ci){showToast('Item not found','warning');return false;}
-      if(!(ci.components||[]).length){showToast('This item has no BOM components defined — cannot create assembly','warning');return false;}
-      const asmNum=document.getElementById('asm-number').value.trim()||asmNo;
-      const whId=document.getElementById('asm-warehouse').value;
-      const qty=parseFloat(document.getElementById('asm-qty').value)||1;
-      if(!db.assemblyOrders)db.assemblyOrders=[];
-      db.assemblyOrders.push({
-        id:Date.now(),
-        orderNo:asmNum,
-        compositeItemId:ciId,
-        compositeItemName:ci.name,
-        qty,
-        manufacturedQty:0,
-        cost:Math.round(calcAssemblyCost(ci)*qty*100)/100,
-        date:document.getElementById('asm-date').value,
-        warehouseId:parseInt(whId)||whId,
-        batch:document.getElementById('asm-batch').value.trim(),
-        notes:document.getElementById('asm-notes').value.trim(),
-        status:'In Progress',
-        createdAt:new Date().toISOString()
-      });
-      saveDB();renderCurrentView();
-    }
-  });
-  // Set default warehouse to Hey Honey US if present
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;padding-top:12px;border-top:1px solid #e2e6ea">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" onclick="_asmSave('${asmNo}')">💾 Save Assembly Order</button>
+    </div>
+  `,'620px');
   setTimeout(()=>{
     const usWh=(db.warehouses||[]).find(w=>w.name&&w.name.toLowerCase().includes('hey honey us'));
     if(usWh)document.getElementById('asm-warehouse').value=usWh.id;
   },50);
 }
 
+function _asmSave(fallbackNo){
+  const ciId=parseInt(document.getElementById('asm-item-id').value||'0');
+  if(!ciId){showToast('Please select an item to assemble','warning');return;}
+  const ci=(db.compositeItems||[]).find(i=>i.id===ciId);
+  if(!ci){showToast('Item not found','warning');return;}
+  if(!(ci.components||[]).length){showToast('This item has no BOM components — cannot create assembly','warning');return;}
+  const qty=parseFloat(document.getElementById('asm-qty').value)||1;
+  const whId=document.getElementById('asm-warehouse').value;
+  const asmNum=(document.getElementById('asm-number').value||'').trim()||fallbackNo;
+  if(!db.assemblyOrders)db.assemblyOrders=[];
+  db.assemblyOrders.unshift({
+    id:Date.now(),
+    orderNo:asmNum,
+    compositeItemId:ciId,
+    compositeItemName:ci.name,
+    compositeSku:ci.sku||'',
+    qty,
+    manufacturedQty:0,
+    cost:Math.round(calcAssemblyCost(ci)*qty*100)/100,
+    dueDate:document.getElementById('asm-due').value,
+    warehouseId:parseInt(whId)||whId,
+    batch:(document.getElementById('asm-batch').value||'').trim(),
+    notes:(document.getElementById('asm-notes').value||'').trim(),
+    status:'In Progress',
+    createdAt:new Date().toISOString()
+  });
+  closeModal();
+  saveDB();
+  renderCurrentView();
+  showToast(`✓ Assembly order ${asmNum} created`);
+}
+
 function _asmSearchItems(q){
-  const dd=document.getElementById('asm-item-dropdown');
+  const dd=document.getElementById('asm-item-dropdown');if(!dd)return;
   const allCI=(db.compositeItems||[]).filter(ci=>(ci.components||[]).length>0&&ci.status!=='Inactive');
-  const sq=q.toLowerCase().trim();
-  const results=sq?allCI.filter(ci=>ci.name.toLowerCase().includes(sq)||(ci.sku||'').toLowerCase().includes(sq)):allCI.slice(0,40);
+  const sq=(q||'').toLowerCase().trim();
+  const results=sq?allCI.filter(ci=>ci.name.toLowerCase().includes(sq)||(ci.sku||'').toLowerCase().includes(sq)):allCI.slice(0,50);
   if(!results.length){
-    dd.innerHTML='<div style="padding:10px 12px;color:#9ca3af;font-size:12px">No items with BOM found</div>';
+    dd.innerHTML='<div style="padding:10px 12px;color:#9ca3af;font-size:12px">No items with BOM components found</div>';
     dd.style.display='block';return;
   }
   dd.innerHTML=results.map(ci=>`
-    <div onclick="_asmSelectItem(${ci.id},'${(ci.name+' ('+ci.sku+')').replace(/'/g,'&#39;')}')"
-      style="padding:8px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid #f0f0f0"
+    <div onclick="_asmSelectItem(${ci.id},${JSON.stringify(ci.name+' ('+ci.sku+')')})"
+      style="padding:8px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid #f3f4f6"
       onmouseover="this.style.background='#f5f3ff'" onmouseout="this.style.background=''">
       <span style="font-weight:500">${ci.name}</span>
       <span style="color:#9ca3af;font-size:11px;margin-left:6px">${ci.sku||''}</span>
-      <span style="color:#7c3aed;font-size:10px;margin-left:6px">${(ci.components||[]).length} components</span>
+      <span style="background:#ede9fe;color:#7c3aed;font-size:10px;border-radius:3px;padding:1px 5px;margin-left:6px">${(ci.components||[]).length} parts</span>
     </div>`).join('');
   dd.style.display='block';
-  // Close on outside click
-  setTimeout(()=>document.addEventListener('click',function _close(e){
-    if(!document.getElementById('asm-item-search')?.contains(e.target)&&!dd.contains(e.target)){dd.style.display='none';document.removeEventListener('click',_close);}
+  setTimeout(()=>document.addEventListener('click',function _cl(e){
+    const s=document.getElementById('asm-item-search');
+    if(s&&!s.contains(e.target)&&!dd.contains(e.target)){dd.style.display='none';document.removeEventListener('click',_cl);}
   }),100);
 }
 
@@ -10480,38 +10506,188 @@ function _asmSelectItem(id,label){
 }
 
 function _asmUpdatePreview(){
-  const ciId=parseInt(document.getElementById('asm-item-id').value||'0');
+  const ciId=parseInt(document.getElementById('asm-item-id')?.value||'0');
   const qty=parseFloat(document.getElementById('asm-qty')?.value)||1;
-  const preview=document.getElementById('asm-bom-preview');
-  if(!preview)return;
+  const preview=document.getElementById('asm-bom-preview');if(!preview)return;
   const ci=(db.compositeItems||[]).find(i=>i.id===ciId);
-  if(!ci||(!(ci.components||[]).length)){preview.style.display='none';return;}
+  if(!ci||!(ci.components||[]).length){preview.style.display='none';return;}
   const rows=(ci.components||[]).map(c=>{
     const item=resolveBOMItem(c.itemId,c.src);
-    const needed=(parseFloat(c.qty)||0)*qty;
+    const needed=Math.round((parseFloat(c.qty)||0)*qty*100)/100;
     const avail=parseFloat(item?.onHand)||0;
     const short=avail<needed;
     return`<tr>
-      <td style="padding:2px 6px">${item?item.name:'Unknown'}</td>
-      <td style="padding:2px 6px;text-align:center">${parseFloat(c.qty)||0}</td>
-      <td style="padding:2px 6px;text-align:center">${needed}</td>
-      <td style="padding:2px 6px;text-align:center;${short?'color:#e53e3e;font-weight:600':''}">${avail}${short?' ⚠️':''}</td>
+      <td style="padding:3px 6px">${item?item.name:'<span style="color:#e53e3e">Unknown item</span>'}</td>
+      <td style="padding:3px 6px;text-align:center;color:#6b7280">${parseFloat(c.qty)||0}</td>
+      <td style="padding:3px 6px;text-align:center;font-weight:600">${needed}</td>
+      <td style="padding:3px 6px;text-align:center;${short?'color:#e53e3e;font-weight:700':'color:#16a34a'}">${avail}${short?' ⚠':'  ✓'}</td>
     </tr>`;
   }).join('');
   const totalCost=Math.round(calcAssemblyCost(ci)*qty*100)/100;
   preview.innerHTML=`
-    <div style="font-weight:600;margin-bottom:6px;color:#1a1a2e">BOM Preview — ${qty} × ${ci.name}</div>
-    <table style="width:100%;border-collapse:collapse">
-      <thead><tr style="color:#718096">
-        <th style="padding:2px 6px;text-align:left;font-weight:500">Component</th>
-        <th style="padding:2px 6px;text-align:center;font-weight:500">Per Unit</th>
-        <th style="padding:2px 6px;text-align:center;font-weight:500">Needed</th>
-        <th style="padding:2px 6px;text-align:center;font-weight:500">On Hand</th>
+    <div style="font-weight:600;margin-bottom:8px;color:#1a1a2e;font-size:13px">📋 BOM — ${qty} × ${ci.name}</div>
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="background:#f1f5f9;color:#475569">
+        <th style="padding:4px 6px;text-align:left;font-weight:500;border-radius:4px 0 0 4px">Component</th>
+        <th style="padding:4px 6px;text-align:center;font-weight:500">Per Unit</th>
+        <th style="padding:4px 6px;text-align:center;font-weight:500">Total Needed</th>
+        <th style="padding:4px 6px;text-align:center;font-weight:500;border-radius:0 4px 4px 0">On Hand</th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>
-    <div style="margin-top:6px;color:#6b7280">Est. cost: <strong>${fmt(totalCost)}</strong></div>`;
+    <div style="margin-top:8px;color:#6b7280;font-size:12px">Estimated cost: <strong style="color:#1a1a2e">${fmt(totalCost)}</strong></div>`;
   preview.style.display='block';
+}
+
+// ── Print Assembly Order ──
+function printAssemblyOrder(aoId){
+  const ao=db.assemblyOrders.find(x=>x.id===aoId||String(x.id)===String(aoId));
+  if(!ao){showToast('Order not found','warning');return;}
+  const ci=(db.compositeItems||[]).find(i=>String(i.id)===String(ao.compositeItemId));
+  const wh=(db.warehouses||[]).find(w=>String(w.id)===String(ao.warehouseId));
+  const components=ci?ci.components||[]:[];
+  const compRows=components.map(c=>{
+    const item=resolveBOMItem(c.itemId,c.src);
+    const needed=Math.round((parseFloat(c.qty)||0)*(parseFloat(ao.qty)||1)*100)/100;
+    return`<tr><td>${item?item.name:'?'}</td><td style="text-align:center">${item?item.sku||'':''}</td><td style="text-align:center">${parseFloat(c.qty)||0}</td><td style="text-align:center;font-weight:600">${needed}</td><td></td></tr>`;
+  }).join('');
+  const win=window.open('','_blank');
+  win.document.write(`<!DOCTYPE html><html><head><title>Assembly Order ${ao.orderNo}</title>
+  <style>body{font-family:Arial,sans-serif;max-width:800px;margin:30px auto;color:#1a1a2e}
+  h1{font-size:22px;margin:0}h2{font-size:14px;font-weight:normal;color:#666;margin:4px 0 20px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 32px;margin-bottom:20px}
+  .field label{font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.5px}
+  .field p{font-size:14px;font-weight:600;margin:2px 0 0}
+  table{width:100%;border-collapse:collapse;margin-top:16px}
+  th{background:#f1f5f9;padding:8px 10px;text-align:left;font-size:12px;border:1px solid #e2e6ea}
+  td{padding:8px 10px;border:1px solid #e2e6ea;font-size:13px}
+  .sig{margin-top:40px;display:grid;grid-template-columns:1fr 1fr;gap:32px}
+  .sig-line{border-top:1px solid #888;padding-top:6px;font-size:12px;color:#666}
+  @media print{button{display:none}}</style></head><body>
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #e05a00;padding-bottom:12px;margin-bottom:16px">
+    <div><h1>Assembly Order</h1><h2>${ao.orderNo}</h2></div>
+    <div style="text-align:right;font-size:12px;color:#666">Status: <strong style="color:#e05a00">${ao.status}</strong><br>Created: ${(ao.createdAt||'').slice(0,10)}</div>
+  </div>
+  <div class="grid">
+    <div class="field"><label>Item to Assemble</label><p>${ci?ci.name:ao.compositeItemName||'—'}</p></div>
+    <div class="field"><label>SKU</label><p>${ci?ci.sku||'—':ao.compositeSku||'—'}</p></div>
+    <div class="field"><label>Quantity to Assemble</label><p>${ao.qty}</p></div>
+    <div class="field"><label>Due Date</label><p>${ao.dueDate||ao.date||'—'}</p></div>
+    <div class="field"><label>Warehouse</label><p>${wh?wh.name:'—'}</p></div>
+    <div class="field"><label>Batch / Lot #</label><p>${ao.batch||'—'}</p></div>
+    ${ao.notes?`<div class="field" style="grid-column:1/3"><label>Notes</label><p style="font-weight:normal">${ao.notes}</p></div>`:''}
+  </div>
+  <table><thead><tr><th>Component</th><th>SKU</th><th>Per Unit</th><th>Total Needed</th><th>Qty Checked ✓</th></tr></thead>
+  <tbody>${compRows}</tbody></table>
+  ${ao.assembledDate?`<div style="margin-top:20px;padding:12px;background:#f0fdf4;border-radius:6px;border:1px solid #bbf7d0">
+    <strong>✓ Assembled</strong> on ${ao.assembledDate} by ${ao.assembledBy||'—'}
+  </div>`:''}
+  <div class="sig">
+    <div><div class="sig-line">Assembled By &amp; Date</div></div>
+    <div><div class="sig-line">Verified By &amp; Date</div></div>
+  </div>
+  <div style="text-align:center;margin-top:24px"><button onclick="window.print()" style="padding:8px 24px;background:#e05a00;color:#fff;border:none;border-radius:6px;font-size:14px;cursor:pointer">🖨 Print</button></div>
+  </body></html>`);
+  win.document.close();
+  setTimeout(()=>win.print(),300);
+}
+
+// ── Mark Assembly as Assembled (triggers inventory movement) ──
+function openMarkAssembledModal(aoId){
+  const ao=db.assemblyOrders.find(x=>x.id===aoId||String(x.id)===String(aoId));
+  if(!ao){showToast('Order not found','warning');return;}
+  if(ao.status==='Assembled'||ao.status==='Completed'){showToast('Already assembled','warning');return;}
+  const today=new Date().toISOString().slice(0,10);
+  openModal(`Mark Assembled — ${ao.orderNo}`,`
+    <p style="font-size:13px;color:#6b7280;margin:0 0 16px">Recording assembly will move inventory: deduct components and add finished goods to <strong>${(db.warehouses||[]).find(w=>String(w.id)===String(ao.warehouseId))?.name||'warehouse'}</strong>.</p>
+    <div class="form-row"><label class="form-label">Date Assembled *</label>
+      <input class="form-input" type="date" id="mk-date" value="${today}">
+    </div>
+    <div class="form-row"><label class="form-label">Assembled By *</label>
+      <input class="form-input" id="mk-by" placeholder="Name of person who assembled">
+    </div>
+    <div class="form-row"><label class="form-label">Quantity Assembled</label>
+      <input class="form-input" type="number" id="mk-qty" value="${ao.qty}" min="1">
+    </div>
+    <div class="form-row"><label class="form-label">Notes (optional)</label>
+      <textarea class="form-input" id="mk-notes" rows="2">${ao.notes||''}</textarea>
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;padding-top:12px;border-top:1px solid #e2e6ea">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" style="background:#16a34a;border-color:#16a34a" onclick="_doMarkAssembled(${aoId})">✓ Confirm Assembly &amp; Move Inventory</button>
+    </div>
+  `,'520px');
+}
+
+function _doMarkAssembled(aoId){
+  const ao=db.assemblyOrders.find(x=>x.id===aoId||String(x.id)===String(aoId));
+  if(!ao)return;
+  const assembledDate=document.getElementById('mk-date').value;
+  const assembledBy=(document.getElementById('mk-by').value||'').trim();
+  if(!assembledDate){showToast('Please enter the date assembled','warning');return;}
+  if(!assembledBy){showToast('Please enter who assembled this order','warning');return;}
+  const assembledQty=parseFloat(document.getElementById('mk-qty').value)||ao.qty;
+  closeModal();
+  // Now run the inventory movement (same logic as completeAssembly)
+  ao.qty=assembledQty;
+  completeAssemblyInventory(ao,assembledDate,assembledBy);
+}
+
+function completeAssemblyInventory(ao,assembledDate,assembledBy){
+  const ci=(db.compositeItems||[]).find(i=>String(i.id)===String(ao.compositeItemId));
+  if(!ci){
+    // Legacy bomId fallback
+    completeAssembly(ao.id);return;
+  }
+  const components=ci.components||[];
+  if(!components.length){showToast('No components defined — cannot complete assembly','warning');return;}
+  const totalQty=parseFloat(ao.qty)||1;
+  const whId=ao.warehouseId?String(ao.warehouseId):null;
+  // Pre-flight: check components that would go negative
+  const negComps=[];
+  components.forEach(comp=>{
+    const deductQty=(parseFloat(comp.qty)||0)*totalQty;
+    if(!deductQty)return;
+    const cItem=resolveBOMItem(comp.itemId,comp.src);
+    if(cItem&&(parseFloat(cItem.onHand)||0)-deductQty<0){
+      negComps.push({item:cItem,current:parseFloat(cItem.onHand)||0,after:(parseFloat(cItem.onHand)||0)-deductQty,needed:deductQty});
+    }
+  });
+  let approvalReason=null;
+  if(negComps.length){
+    const list=negComps.map(n=>`• ${n.item.name}: ${n.current} on hand, need ${n.needed}`).join('\n');
+    const pw=prompt(`⚠️ INSUFFICIENT STOCK\n\n${list}\n\nEnter admin password to override and proceed:`);
+    if(!pw){showToast('Assembly cancelled — insufficient stock','warning');return;}
+    if(pw!==APP_PASSWORD){alert('Incorrect password.');return;}
+    const r=prompt('Reason for proceeding with insufficient stock (required):');
+    if(!r||!r.trim()){alert('Reason required.');return;}
+    approvalReason=r.trim();
+  }
+  // Deduct each component
+  components.forEach(comp=>{
+    const deductQty=(parseFloat(comp.qty)||0)*totalQty;
+    if(!deductQty)return;
+    const cItem=resolveBOMItem(comp.itemId,comp.src);
+    if(cItem)_deductItemStock(cItem,deductQty,whId,{type:'assembly',approvalReason,reason:'Assembly: '+ao.orderNo});
+  });
+  // Add finished composite item to the assembly warehouse
+  ci.onHand=(parseFloat(ci.onHand)||0)+totalQty;
+  if(whId){
+    if(!ci.warehouseStock)ci.warehouseStock={};
+    ci.warehouseStock[whId]=(parseFloat(ci.warehouseStock[whId])||0)+totalQty;
+  }
+  // Update assembly order record
+  ao.status='Assembled';
+  ao.manufacturedQty=totalQty;
+  ao.cost=Math.round(calcAssemblyCost(ci)*totalQty*100)/100;
+  ao.assembledDate=assembledDate;
+  ao.assembledBy=assembledBy;
+  ao.completedAt=new Date().toISOString();
+  // Update cost price
+  const newCost=Math.round(calcAssemblyCost(ci)*100)/100;
+  if(newCost>0)ci.costPrice=newCost;
+  saveDB();recalcDerivedCosts();renderCurrentView();
+  showToast(`✓ Assembly ${ao.orderNo} marked assembled by ${assembledBy} — inventory updated`);
 }
 
 // ── BILL OF MATERIALS MODAL ──
