@@ -4,6 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Yoro Inventory PRO</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='18' fill='%23e05a00'/><text y='.9em' font-size='72' x='50%' dominant-baseline='top' text-anchor='middle'>📦</text></svg>">
 <style>
 :root{--primary:#e05a00;--primary-dark:#b84800;--primary-light:#fff3ec;--sidebar-bg:#1a1a2e;--sidebar-text:#c8c8d8;--bg:#f4f6f9;--card:#fff;--border:#e2e6ea;--text:#2d3748;--text-light:#718096;--success:#38a169;--warning:#d69e2e;--danger:#e53e3e;--info:#3182ce;--radius:8px;--shadow:0 1px 4px rgba(0,0,0,.08)}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -2748,26 +2749,48 @@ let modalContext=null;
 
 function fmt(n){return'$'+parseFloat(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,',');}
 function badgeHtml(status){const colors={Active:'success',Inactive:'gray',Draft:'info',Confirmed:'info',Issued:'info',Paid:'success',Unpaid:'warning',Overdue:'danger',Open:'info',Closed:'success',Void:'danger',Adjusted:'success','In Transit':'info',Received:'success','In Progress':'info',Completed:'success',Cancelled:'danger',Shipped:'success',Delivered:'success','Not Shipped':'warning','Not Packed':'warning','Not Invoiced':'warning'};const c=colors[status]||'gray';return`<span class="badge badge-${c}">${status}</span>`;}
+let _dbDirty=false; // true only when user has made local changes not yet superseded by a server load
 function saveDB(){
+  _dbDirty=true;
   try{localStorage.setItem(STORAGE_KEY,JSON.stringify(db));}catch(e){}
   if(_authToken){
     fetch('/db',{method:'POST',headers:authHeaders(),body:JSON.stringify(db)})
-      .then(r=>{if(!r.ok){if(r.status===401)_showSessionExpiredBanner();else _showSaveFail();}else _clearSaveFailBanner();})
+      .then(async r=>{
+        if(!r.ok){
+          if(r.status===401)_showSessionExpiredBanner();
+          else if(r.status===409){await loadDBFromServer();renderCurrentView();}
+          else _showSaveFail();
+        }else{
+          const rd=await r.json();
+          if(rd._v)db._v=rd._v;
+          _clearSaveFailBanner();_dbDirty=false;
+        }
+      })
       .catch(()=>_showSaveFail());
   }
 }
 
 async function saveDBNow(){
+  _dbDirty=true;
   try{localStorage.setItem(STORAGE_KEY,JSON.stringify(db));}catch(e){}
   if(!_authToken)return false;
   try{
     const r=await fetch('/db',{method:'POST',headers:authHeaders(),body:JSON.stringify(db)});
     if(!r.ok){
-      if(r.status===401)_showSessionExpiredBanner();
-      else _showSaveFail();
+      if(r.status===401){_showSessionExpiredBanner();return false;}
+      if(r.status===409){
+        // Server has newer data — reload it before overwriting
+        await loadDBFromServer();
+        renderCurrentView();
+        return false;
+      }
+      _showSaveFail();
       return false;
     }
+    const rd=await r.json();
+    if(rd._v)db._v=rd._v; // keep version in sync
     _clearSaveFailBanner();
+    _dbDirty=false;
     return true;
   }catch(e){_showSaveFail();return false;}
 }
@@ -2843,10 +2866,10 @@ function recalcDerivedCosts(){
   let changed=false;
   (db.compositeItems||[]).forEach(ci=>{
     const cost=calcAssemblyCost(ci);
-    if(ci.costPrice!==cost){ci.costPrice=cost;changed=true;}
+    const rCost=Math.round(cost*100)/100;if(ci.costPrice!==rCost){ci.costPrice=rCost;changed=true;}
   });
   (db.kits||[]).forEach(kit=>{
-    const cost=calcKitCost(kit);
+    const cost=Math.round(calcKitCost(kit)*100)/100;
     if(kit.costPrice!==cost){kit.costPrice=cost;changed=true;}
   });
   if(changed)saveDB();
@@ -2866,6 +2889,8 @@ async function loadDBFromServer(){
       if(!db.shopify.proxyUrl)db.shopify.proxyUrl='/.netlify/functions/shopify-proxy';
       // Also update localStorage cache
       try{localStorage.setItem(STORAGE_KEY,JSON.stringify(db));}catch(e){}
+      if(serverData._v)db._v=serverData._v; // track server version
+      _dbDirty=false; // server load is authoritative — nothing to push back
       return true;
     }
     return false;
@@ -3446,6 +3471,7 @@ function updateNavHighlight(view){
 
 function navigate(view){
   currentView=view;
+  localStorage.setItem('hhp_last_view',view);
   currentStatus='All';
   document.querySelectorAll('.view').forEach(el=>el.classList.remove('active'));
   document.getElementById('view-'+view)?.classList.add('active');
@@ -3632,7 +3658,7 @@ function saveItemStockInline(itemId,whId,newVal){
 function saveItemCostInline(id,val){
   const item=db.items.find(i=>i.id===id);
   if(!item)return;
-  const newCost=parseFloat(String(val).replace(/[$,\s]/g,''))||0;
+  const newCost=Math.round((parseFloat(String(val).replace(/[$,\s]/g,''))||0)*100)/100;
   if(item.costPrice===newCost)return;
   item.costPrice=newCost;
   saveDB();
@@ -3664,7 +3690,7 @@ function saveCompositeStockInline(ciId,whId,newVal){
 function saveCompositeCostInline(id,val){
   const ci=(db.compositeItems||[]).find(i=>i.id===id);
   if(!ci)return;
-  const newCost=parseFloat(String(val).replace(/[$,\s]/g,''))||0;
+  const newCost=Math.round((parseFloat(String(val).replace(/[$,\s]/g,''))||0)*100)/100;
   if(ci.costPrice===newCost)return;
   ci.costPrice=newCost;
   saveDB();
@@ -5542,7 +5568,7 @@ function completeAssembly(aoId){
     },0);
     const laborPerUnit=parseFloat(bom.laborCost)||0;
     const bomOutQty=parseFloat(bom.qty)||1;
-    finishedItem.costPrice=(matCost+laborPerUnit)/bomOutQty;
+    finishedItem.costPrice=Math.round(((matCost+laborPerUnit)/bomOutQty)*100)/100;
   }
   saveDB();
   recalcDerivedCosts();
@@ -11011,7 +11037,7 @@ function showCompositeDetail(id){
     return`<tr><td style="padding:6px 8px;font-size:12px">${name}</td><td style="padding:6px 8px;font-size:12px;color:var(--text-light)">${sku}</td><td style="padding:6px 8px;font-size:12px;text-align:center;font-weight:600">${c.qty}</td><td style="padding:6px 8px;font-size:12px;text-align:right;color:var(--text-light)">${fmt(unitCost)}</td><td style="padding:6px 8px;font-size:12px;text-align:right;font-weight:600">${fmt(unitCost*c.qty)}</td></tr>`;
   }).join('');
   const totalBomCost=calcAssemblyCost(ci);
-  if(ci.costPrice!==totalBomCost){ci.costPrice=totalBomCost;saveDB();}
+  const roundedBomCost=Math.round(totalBomCost*100)/100;if(ci.costPrice!==roundedBomCost){ci.costPrice=roundedBomCost;saveDB();}
   const body=`
 <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;padding:14px;background:#f5f3ff;border-radius:8px">
   <div style="width:48px;height:48px;background:#7c3aed;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:22px">⚙️</div>
@@ -11376,18 +11402,31 @@ function buildCustomerIntelligence(so){
     return false;
   }
 
-  // --- Historical orders by same person ---
+  // --- Historical orders by same person (local DB) ---
   const prevOrders=(db.salesOrders||[]).filter(s=>{
     if(s.id===so.id)return false;
     return _samePersonOrders(so,s);
   }).sort((a,b)=>a.date<b.date?-1:1);
 
-  const isFirstTime=prevOrders.length===0;
-  const orderCount=prevOrders.length;
-  const lifetimeValue=prevOrders.reduce((s,o)=>s+(o.amount||0),0)+(so.amount||0);
+  // --- Shopify customer totals as fallback for orders not yet downloaded ---
+  // shopifyOrdersCount = total orders ever placed (including current), so prev = count - 1
+  const shopifyCustOrdersCount=matchedCust?.shopifyOrdersCount??null;
+  const shopifyCustTotalSpent=matchedCust?.shopifyTotalSpent??null;
+  // How many orders does Shopify say this customer has had before this one?
+  const shopifyKnownPrevCount=shopifyCustOrdersCount!=null?Math.max(0,shopifyCustOrdersCount-1):null;
+  // Use whichever is larger — local history or Shopify's known count
+  const effectivePrevCount=shopifyKnownPrevCount!=null?Math.max(prevOrders.length,shopifyKnownPrevCount):prevOrders.length;
+  // True only if both local history AND Shopify confirm zero prior orders
+  const isFirstTime=effectivePrevCount===0;
+  const orderCount=effectivePrevCount;
+  // Lifetime value: use shopifyTotalSpent when it's larger (covers orders not in local DB)
+  const localLTV=prevOrders.reduce((s,o)=>s+(o.amount||0),0)+(so.amount||0);
+  const lifetimeValue=shopifyCustTotalSpent!=null?Math.max(localLTV,shopifyCustTotalSpent):localLTV;
   const avgOrderValue=(orderCount+1)>0?(lifetimeValue/(orderCount+1)):so.amount||0;
   const firstOrderDate=prevOrders.length?prevOrders[0].date:so.date;
   const lastOrderDate=prevOrders.length?prevOrders[prevOrders.length-1].date:null;
+  // Flag when Shopify knows about more orders than we have locally
+  const hasMissingHistory=shopifyKnownPrevCount!=null&&shopifyKnownPrevCount>prevOrders.length;
 
   // --- Sample / gift detection ---
   const isSample=li=>{
@@ -11440,7 +11479,7 @@ function buildCustomerIntelligence(so){
   else if(prevSamples.length>0){const last=prevSamples[prevSamples.length-1];suggestedAction=`🧪 Already received: "${last.name}" — choose a different sample.`;suggestType='sample';}
   else{suggestedAction='↩ Returning customer — thank-you note recommended.';suggestType='normal';}
 
-  return{channel,matchedCust,matchConfidence,isFirstTime,orderCount,lifetimeValue,avgOrderValue,firstOrderDate,lastOrderDate,prevOrders,prevSamples,prevGifts,prevItems,currentSamples,allLineProps,soNoteAttrs,discountCodes:[...discountSet],riskFlags,suggestedAction,suggestType,cancelCount,refundCount,shopifyNote:so.shopifyNote||'',shopifyTags:so.shopifyTags||'',custNote:matchedCust?.shopifyNote||matchedCust?.note||'',custTags:matchedCust?.shopifyTags||'',custOrdersCount:matchedCust?.shopifyOrdersCount??null,custTotalSpent:matchedCust?.shopifyTotalSpent??null,email};
+  return{channel,matchedCust,matchConfidence,isFirstTime,orderCount,hasMissingHistory,shopifyKnownPrevCount,lifetimeValue,avgOrderValue,firstOrderDate,lastOrderDate,prevOrders,prevSamples,prevGifts,prevItems,currentSamples,allLineProps,soNoteAttrs,discountCodes:[...discountSet],riskFlags,suggestedAction,suggestType,cancelCount,refundCount,shopifyNote:so.shopifyNote||'',shopifyTags:so.shopifyTags||'',custNote:matchedCust?.shopifyNote||matchedCust?.note||'',custTags:matchedCust?.shopifyTags||'',custOrdersCount:matchedCust?.shopifyOrdersCount??null,custTotalSpent:matchedCust?.shopifyTotalSpent??null,email};
 }
 
 function renderCIPanel(so){
@@ -11505,7 +11544,8 @@ function renderCIPanel(so){
     <div style="background:#f8f9fb;border-radius:8px;padding:10px;text-align:center">
       <div style="font-size:10px;color:var(--text-light);text-transform:uppercase;letter-spacing:.5px">Orders</div>
       <div style="font-size:22px;font-weight:700;color:#4f46e5;line-height:1.2">${ci.orderCount+1}</div>
-      <div style="font-size:10px;color:var(--text-light)">${ci.orderCount} prev</div>
+      <div style="font-size:10px;color:var(--text-light)">${ci.orderCount} prev${ci.hasMissingHistory?` <span title="${ci.shopifyKnownPrevCount} total on Shopify; only ${ci.prevOrders.length} downloaded locally" style="color:#f59e0b;cursor:help">⚠️</span>`:''}</div>
+      ${ci.hasMissingHistory?`<div style="font-size:9px;color:#92400e;margin-top:2px">${ci.prevOrders.length} local · ${ci.shopifyKnownPrevCount} on Shopify</div>`:''}
     </div>
     <div style="background:#f8f9fb;border-radius:8px;padding:10px;text-align:center">
       <div style="font-size:10px;color:var(--text-light);text-transform:uppercase;letter-spacing:.5px">Lifetime Value</div>
@@ -13147,15 +13187,62 @@ async function syncShopifyOrders(limit=250){
   if(status)status.textContent='Syncing…';
   addSyncLog(`── Order sync started (limit: ${limit}) ──`);
   try{
-    const fromDate=db.shopify.ordersFromDate;
-    const dateParam=fromDate?`&created_at_min=${encodeURIComponent(fromDate+'T00:00:00-00:00')}`:'';
-    if(fromDate)addSyncLog(`Date filter: orders from ${fromDate} onwards`);
-    const data=await shopifyFetch(`/orders.json?limit=${limit}&status=any${dateParam}&fields=id,name,created_at,financial_status,fulfillment_status,line_items,total_price,subtotal_price,total_discounts,discount_codes,shipping_lines,shipping_address,billing_address,email,phone,customer,note,tags,note_attributes`);
+    // Use updated_at_min = last sync time so we catch any orders that were stuck/delayed in Shopify.
+    // Fall back to created_at_min (user-configured start date) on the very first sync.
+    const lastSyncTime=db.shopify.lastSync?.orders||null;
+    const fromDate=db.shopify.ordersFromDate||null;
+    let fetchParam='';
+    if(lastSyncTime){
+      fetchParam=`&updated_at_min=${encodeURIComponent(lastSyncTime)}`;
+      addSyncLog(`Fetching orders updated since last sync: ${new Date(lastSyncTime).toLocaleString()}`);
+    } else if(fromDate){
+      fetchParam=`&created_at_min=${encodeURIComponent(fromDate+'T00:00:00-00:00')}`;
+      addSyncLog(`First sync — date filter: orders from ${fromDate} onwards`);
+    }
+    const data=await shopifyFetch(`/orders.json?limit=${limit}&status=any${fetchParam}&fields=id,name,created_at,financial_status,fulfillment_status,line_items,total_price,subtotal_price,total_discounts,discount_codes,shipping_lines,shipping_address,billing_address,email,phone,customer,note,tags,note_attributes`);
     const orders=data.orders||[];
     addSyncLog(`Fetched ${orders.length} orders from Shopify`);
     const shopifyCust=getOrCreateShopifyWebsiteCustomer();
     let added=0,updated=0,held=0;
+
+    // Upsert customer from order data — runs for every order so no separate customer sync needed
+    function upsertCustomerFromOrder(ord){
+      const c=ord.customer;
+      if(!c||!c.id)return;
+      const allReal=db.customers.filter(cu=>!cu.shopifyWebsite&&!cu.amazonFBA);
+      let existing=allReal.find(cu=>String(cu.shopifyCustomerId)===String(c.id));
+      if(!existing&&c.email)existing=allReal.find(cu=>(cu.email||'').toLowerCase().trim()===(c.email||'').toLowerCase().trim());
+      const addr=c.default_address||{};
+      const fullName=[c.first_name,c.last_name].filter(Boolean).join(' ')||addr.name||'';
+      const patch={
+        shopifyCustomerId:c.id,
+        shopifyOrdersCount:c.orders_count||0,
+        shopifyTotalSpent:parseFloat(c.total_spent||0),
+        shopifyTags:c.tags||'',
+        shopifyNote:c.note||'',
+      };
+      if(existing){
+        Object.assign(existing,patch);
+      } else {
+        db.customers.push({
+          id:db.nextId.customers++,
+          name:fullName,
+          email:c.email||'',
+          phone:c.phone||addr.phone||'',
+          address:addr.address1||'',
+          city:addr.city||'',
+          state:addr.province||'',
+          zip:addr.zip||'',
+          country:addr.country||'',
+          receivables:0,
+          status:'Active',
+          ...patch,
+        });
+      }
+    }
+
     orders.forEach(ord=>{
+      upsertCustomerFromOrder(ord);
       const soNo='SH-'+ord.name.replace(/^#/,'').trim();
       // Resolve every line item by SKU only
       const unmappedSkus=[];
@@ -13188,10 +13275,10 @@ async function syncShopifyOrders(limit=250){
       const shippingLines=(ord.shipping_lines||[]).map(sl=>({itemId:null,itemName:sl.title||'Shipping',shopifySku:'',shopifyTitle:sl.title||'',qty:1,rate:parseFloat(sl.price||0),lineDiscount:0,discount:0,amount:parseFloat(sl.price||0),isShipping:true}));
       const allItems=[...resolvedItems,...shippingLines];
       if(unmappedSkus.length>0){
-        const alreadyExists=db.salesOrders.find(s=>s.shopifyOrderId===ord.id);
+        const alreadyExists=db.salesOrders.find(s=>String(s.shopifyOrderId)===String(ord.id));
         if(!alreadyExists){
           if(!db.shopify.pendingOrders)db.shopify.pendingOrders=[];
-          const alreadyHeld=db.shopify.pendingOrders.find(p=>p.shopifyOrderId===ord.id);
+          const alreadyHeld=db.shopify.pendingOrders.find(p=>String(p.shopifyOrderId)===String(ord.id));
           if(!alreadyHeld){db.shopify.pendingOrders.push({shopifyOrderId:ord.id,soNo,ordData:ord,unmappedSkus:[...new Set(unmappedSkus)]});held++;}
         }
         return;
@@ -13208,7 +13295,7 @@ async function syncShopifyOrders(limit=250){
       };
       const payMap={paid:'Paid',pending:'Unpaid',refunded:'Paid',partially_paid:'Unpaid',voided:'Unpaid'};
       const payment=payMap[ord.financial_status]||'Unpaid';
-      const existing=db.salesOrders.find(s=>s.shopifyOrderId===ord.id||s.soNo===soNo);
+      const existing=db.salesOrders.find(s=>String(s.shopifyOrderId)===String(ord.id)||s.soNo===soNo);
       const shippingTotal=(ord.shipping_lines||[]).reduce((s,sl)=>s+parseFloat(sl.price||0),0);
       const payload={soNo,refNo:String(ord.id),customerId:shopifyCust.id,status:'Confirmed',invoiced:payment==='Paid'?'Invoiced':'Not Invoiced',payment,packed:ord.fulfillment_status==='fulfilled'?'Packed':'Not Packed',shipped:ord.fulfillment_status==='fulfilled'?'Shipped':'Not Shipped',amount:parseFloat(ord.total_price),subtotal:parseFloat(ord.subtotal_price||0),totalDiscount:parseFloat(ord.total_discounts||0),discountCodes:(ord.discount_codes||[]).map(d=>d.code).join(', '),shippingTotal,deliveryMethod:'Shopify',channel:'Shopify',warehouseId:getChannelWarehouseId('shopify')||1,date:ord.created_at?ord.created_at.substring(0,10):new Date().toISOString().substring(0,10),items:allItems,shopifyOrderId:ord.id,shopifyCustomerId:ord.customer?.id||null,shopifyNote:ord.note||'',shopifyNoteAttributes:ord.note_attributes||[],shopifyTags:ord.tags||'',...shipTo};
       if(existing){Object.assign(existing,payload);updated++;}
@@ -14614,7 +14701,8 @@ async function initApp(){
   applyPermissionUI();
   recalcDerivedCosts();
   renderShopifyCard();
-  navigate('dashboard');
+  const lastView=localStorage.getItem('hhp_last_view')||'dashboard';
+  navigate(lastView);
   runZohoPoImport();
   const pc=document.getElementById('pref-currency');if(pc)pc.value=db.preferences.currency;
   const pt=document.getElementById('pref-tax-name');if(pt)pt.value=db.preferences.taxName;
@@ -14622,10 +14710,20 @@ async function initApp(){
   const pn=document.getElementById('pref-neg-stock');if(pn)pn.checked=db.preferences.preventNegativeStock;
   const pl=document.getElementById('pref-low-stock');if(pl)pl.checked=db.preferences.lowStockWarning;
   // Auto-save to server every 60 seconds so no changes are ever silently lost
-  setInterval(()=>{if(_authToken)saveDBNow();},60000);
-  // Save on tab/window close via sendBeacon (works even during unload)
+  // Every 60s: push only if user made changes (_dbDirty), otherwise pull fresh from server
+  setInterval(async()=>{
+    if(!_authToken)return;
+    if(_dbDirty){
+      await saveDBNow();
+    } else {
+      // Pull latest from server so external updates (bulk imports, API changes) are reflected
+      await loadDBFromServer();
+      renderCurrentView();
+    }
+  },60000);
+  // Save on tab/window close — only if user made local changes since the last server load
   window.addEventListener('beforeunload',()=>{
-    if(_authToken)navigator.sendBeacon('/db',JSON.stringify(db));
+    if(_authToken&&_dbDirty)navigator.sendBeacon('/db',JSON.stringify(db));
   });
 }
 
