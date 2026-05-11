@@ -3665,6 +3665,105 @@ function saveItemCostInline(id,val){
   showToast(`✓ Cost updated to ${fmt(newCost)}`,1800);
 }
 
+// ── Quick Adjust Quantity Modal (Items + Composite Items) ──────────────────
+function openAdjustQtyModal(itemId, collection){
+  const col=collection||'items';
+  const item=col==='compositeItems'
+    ?(db.compositeItems||[]).find(i=>i.id===itemId)
+    :(db.items||[]).find(i=>i.id===itemId);
+  if(!item){showToast('Item not found','warning');return;}
+  const whs=db.warehouses||[];
+  const rows=whs.map(w=>{
+    const cur=parseFloat((item.warehouseStock||{})[w.id]??0)||0;
+    return`<tr>
+      <td style="padding:6px 8px;font-size:13px;font-weight:500">${w.name}</td>
+      <td style="padding:6px 8px;text-align:center;color:#6b7280;font-size:13px">${cur}</td>
+      <td style="padding:6px 8px;text-align:center">
+        <input type="number" id="aqm-${w.id}" value="${cur}" min="0" step="1"
+          style="width:80px;border:1px solid #d1d5db;border-radius:5px;padding:4px 6px;font-size:13px;text-align:center"
+          onfocus="this.style.borderColor='#6366f1';this.style.boxShadow='0 0 0 2px #e0e7ff'"
+          onblur="this.style.borderColor='#d1d5db';this.style.boxShadow='none'">
+      </td>
+      <td style="padding:6px 8px;text-align:center;font-size:12px;color:#6b7280" id="aqm-delta-${w.id}">—</td>
+    </tr>`;
+  }).join('');
+  // Listen for input to show deltas
+  openModal(`Adjust Quantities — ${item.name}`,`
+    <p style="font-size:12px;color:#6b7280;margin:0 0 12px">Set the new quantity for each warehouse. Changes are logged to the Audit Log.</p>
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr style="background:#f8fafc;font-size:11px;color:#475569;text-transform:uppercase;letter-spacing:.5px">
+        <th style="padding:6px 8px;text-align:left">Warehouse</th>
+        <th style="padding:6px 8px;text-align:center">Current</th>
+        <th style="padding:6px 8px;text-align:center">New Qty</th>
+        <th style="padding:6px 8px;text-align:center">Change</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="form-row" style="margin-top:12px"><label class="form-label">Reason for Adjustment</label>
+      <input class="form-input" id="aqm-reason" placeholder="e.g. Physical count, Damaged stock, Correction…">
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid #e2e6ea">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" onclick="_doAdjustQty(${itemId},'${col}')">💾 Save Adjustments</button>
+    </div>
+  `,'500px');
+  // Wire up delta display after modal renders
+  setTimeout(()=>{
+    whs.forEach(w=>{
+      const cur=parseFloat((item.warehouseStock||{})[w.id]??0)||0;
+      const inp=document.getElementById(`aqm-${w.id}`);
+      const deltaEl=document.getElementById(`aqm-delta-${w.id}`);
+      if(!inp||!deltaEl)return;
+      const update=()=>{
+        const nv=parseFloat(inp.value)||0;
+        const d=nv-cur;
+        deltaEl.textContent=(d>0?'+':'')+d;
+        deltaEl.style.color=d>0?'#16a34a':d<0?'#e53e3e':'#6b7280';
+        deltaEl.style.fontWeight=d!==0?'700':'400';
+      };
+      inp.addEventListener('input',update);
+      update();
+    });
+    document.getElementById('aqm-reason')?.focus();
+  },80);
+}
+
+function _doAdjustQty(itemId, col){
+  const item=col==='compositeItems'
+    ?(db.compositeItems||[]).find(i=>i.id===itemId)
+    :(db.items||[]).find(i=>i.id===itemId);
+  if(!item)return;
+  const reason=(document.getElementById('aqm-reason')?.value||'').trim()||'Manual adjustment';
+  const whs=db.warehouses||[];
+  if(!item.warehouseStock)item.warehouseStock={};
+  let anyChange=false;
+  const oldTotal=parseFloat(item.onHand)||0;
+  whs.forEach(w=>{
+    const inp=document.getElementById(`aqm-${w.id}`);
+    if(!inp)return;
+    const nv=parseFloat(inp.value);
+    if(isNaN(nv))return;
+    const cur=parseFloat(item.warehouseStock[w.id]??0)||0;
+    if(nv===cur)return;
+    item.warehouseStock[w.id]=nv;
+    anyChange=true;
+  });
+  if(!anyChange){closeModal();showToast('No changes to save','warning');return;}
+  item.onHand=Object.values(item.warehouseStock).reduce((s,v)=>s+(parseFloat(v)||0),0);
+  const delta=item.onHand-oldTotal;
+  if(!db.adjustments)db.adjustments=[];
+  db.adjustments.push({
+    id:Date.now(),adjNo:'ADJ-'+String(Date.now()).slice(-6),
+    reason,date:new Date().toISOString().slice(0,10),status:'Adjusted',
+    items:[{itemId,warehouseId:null,qtyAdjusted:delta,newQty:item.onHand,collection:col}]
+  });
+  addAuditEntry(item,oldTotal,item.onHand,reason,'adjustment',null,[]);
+  closeModal();
+  saveDB();
+  if(col==='compositeItems')renderCompositeItems();else renderItems();
+  showToast(`✓ ${item.name} quantities updated (${delta>=0?'+':''}${delta} total)`,2500);
+}
+
 function saveCompositeStockInline(ciId,whId,newVal){
   const ci=(db.compositeItems||[]).find(i=>i.id===ciId);
   if(!ci)return;
@@ -3762,7 +3861,7 @@ function renderItems(){
             title="Click to edit cost price">
         </td>`
       :'';
-    return`<tr class="clickable-row" onclick="showItemDetail(${i.id})">${imgCell}<td style="max-width:220px">${i.name}${kitBadge}</td><td style="white-space:nowrap">${i.sku}</td><td style="white-space:nowrap">${i.brand||'-'}</td>${costCell}<td style="white-space:nowrap">${fmt(i.salePrice)}</td><td style="font-weight:600;text-align:center">${i.isVirtualKit?'—':i.onHand}</td>${whCells}<td style="text-align:center">${i.reorderPt}</td><td>${badgeHtml(i.status)}</td><td onclick="event.stopPropagation()" style="text-align:center"><button title="Copy item" onclick="copyItem(${i.id})" style="background:none;border:none;cursor:pointer;font-size:14px;color:#0369a1;padding:2px 4px">⧉</button></td></tr>`;
+    return`<tr class="clickable-row" onclick="showItemDetail(${i.id})">${imgCell}<td style="max-width:220px">${i.name}${kitBadge}</td><td style="white-space:nowrap">${i.sku}</td><td style="white-space:nowrap">${i.brand||'-'}</td>${costCell}<td style="white-space:nowrap">${fmt(i.salePrice)}</td><td style="font-weight:600;text-align:center">${i.isVirtualKit?'—':i.onHand}</td>${whCells}<td style="text-align:center">${i.reorderPt}</td><td>${badgeHtml(i.status)}</td><td onclick="event.stopPropagation()" style="text-align:center;white-space:nowrap"><button title="Adjust quantities" onclick="openAdjustQtyModal(${i.id},'items')" style="background:none;border:none;cursor:pointer;font-size:13px;color:#6366f1;padding:2px 4px">✏️</button><button title="Copy item" onclick="copyItem(${i.id})" style="background:none;border:none;cursor:pointer;font-size:14px;color:#0369a1;padding:2px 4px">⧉</button></td></tr>`;
   }).join('');
   document.getElementById('items-table').innerHTML=html||`<tr class="empty-row"><td colspan="${colspan}">No items found</td></tr>`;
   const sortKeys=[{},...[{key:'name'},{key:'sku'},{key:'brand'},...(isAdmin?[{key:'costPrice'}]:[]),{key:'salePrice'},{key:'onHand'},...whs.map(()=>({})),{key:'reorderPt'},{key:'status'},{}]];
@@ -4278,7 +4377,10 @@ function renderCompositeItems(){
       <td style="font-weight:600;text-align:center">${ci.onHand??0}</td>
       ${whCells}
       <td>${badgeHtml(ci.status)}</td>
-      <td onclick="event.stopPropagation()" style="text-align:center"><button title="Copy item" onclick="copyItem(${ci.id},'compositeItems')" style="background:none;border:none;cursor:pointer;font-size:14px;color:#0369a1;padding:2px 4px">⧉</button></td>
+      <td onclick="event.stopPropagation()" style="text-align:center;white-space:nowrap">
+        <button title="Adjust quantities" onclick="openAdjustQtyModal(${ci.id},'compositeItems')" style="background:none;border:none;cursor:pointer;font-size:13px;color:#6366f1;padding:2px 5px" title="Adjust quantities">✏️</button>
+        <button title="Copy item" onclick="copyItem(${ci.id},'compositeItems')" style="background:none;border:none;cursor:pointer;font-size:14px;color:#0369a1;padding:2px 4px">⧉</button>
+      </td>
     </tr>`;
   }).join('');
   document.getElementById('composite-items-table').innerHTML=html||`<tr class="empty-row"><td colspan="${colspan}">No composite items</td></tr>`;
