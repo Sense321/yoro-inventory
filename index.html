@@ -1198,16 +1198,94 @@ table tr.clickable-row:hover td{background:#fff8f5}
 
 <!-- ASSEMBLY ORDERS VIEW -->
 <div id="view-assembly-orders" class="view">
-  <div class="section">
-    <div class="section-header"><div class="section-title">Assemblies</div><button class="btn btn-primary btn-sm" onclick="openAddModal('assembly-orders')">+ New</button></div>
-    <div class="status-tabs">
-      <div class="status-tab active" onclick="filterByStatus('assembly-orders','All')">All</div>
-      <div class="status-tab" onclick="filterByStatus('assembly-orders','Draft')">Draft</div>
-      <div class="status-tab" onclick="filterByStatus('assembly-orders','In Progress')">In Progress</div>
-      <div class="status-tab" onclick="filterByStatus('assembly-orders','Completed')">Completed</div>
-      <div class="status-tab" onclick="filterByStatus('assembly-orders','Cancelled')">Cancelled</div>
+  <!-- List sub-view -->
+  <div id="asm-list-view">
+    <div class="section">
+      <div class="section-header"><div class="section-title">Assemblies</div><button class="btn btn-primary btn-sm" onclick="showNewAssemblyForm()">+ New</button></div>
+      <div class="status-tabs">
+        <div class="status-tab active" onclick="filterByStatus('assembly-orders','All')">All</div>
+        <div class="status-tab" onclick="filterByStatus('assembly-orders','Draft')">Draft</div>
+        <div class="status-tab" onclick="filterByStatus('assembly-orders','In Progress')">In Progress</div>
+        <div class="status-tab" onclick="filterByStatus('assembly-orders','Assembled')">Assembled</div>
+        <div class="status-tab" onclick="filterByStatus('assembly-orders','Cancelled')">Cancelled</div>
+      </div>
+      <table><thead><tr><th>Assembly#</th><th>Assembled Date</th><th>Item</th><th>Qty to Assemble</th><th>Assembled Qty</th><th>Cost</th><th>Status</th><th>Warehouse</th><th></th></tr></thead><tbody id="assembly-orders-table"></tbody></table>
     </div>
-    <table><thead><tr><th>Assembly#</th><th>Date</th><th>Item</th><th>Qty</th><th>Manufactured Qty</th><th>Cost</th><th>Status</th><th>Warehouse</th><th></th></tr></thead><tbody id="assembly-orders-table"></tbody></table>
+  </div>
+  <!-- New Assembly full-page form -->
+  <div id="asm-new-view" style="display:none">
+    <div class="section" style="max-width:860px;margin:0 auto">
+      <div class="section-header" style="border-bottom:2px solid var(--primary);padding-bottom:12px;margin-bottom:20px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:22px">📋</span>
+          <div class="section-title" style="font-size:20px" id="asm-form-title">New Assembly</div>
+        </div>
+      </div>
+      <!-- Form fields -->
+      <div style="display:grid;gap:0">
+        <div class="form-row" style="display:grid;grid-template-columns:180px 1fr;align-items:start;gap:12px;padding:10px 0;border-bottom:1px solid #f1f5f9">
+          <label class="form-label" style="color:#e05a00;font-weight:600;padding-top:8px">Composite Item *</label>
+          <div>
+            <div style="position:relative">
+              <input class="form-input" id="asm-ci-search" placeholder="Select or search composite item…" autocomplete="off"
+                oninput="_asmCiSearch(this.value)" onfocus="_asmCiSearch(this.value)"
+                style="font-size:14px">
+              <input type="hidden" id="asm-ci-id">
+              <div id="asm-ci-dd" style="display:none;position:absolute;z-index:9999;background:#fff;border:1px solid #d1d5db;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.12);max-height:260px;overflow-y:auto;width:100%;top:calc(100%+2px);left:0"></div>
+            </div>
+            <div id="asm-ci-sku" style="font-size:12px;color:#6b7280;margin-top:4px"></div>
+          </div>
+        </div>
+        <div class="form-row" style="display:grid;grid-template-columns:180px 1fr;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid #f1f5f9">
+          <label class="form-label" style="color:#e05a00;font-weight:600">Assembly # *</label>
+          <input class="form-input" id="asm-f-number" style="max-width:280px;font-size:14px">
+        </div>
+        <div class="form-row" style="display:grid;grid-template-columns:180px 1fr;align-items:start;gap:12px;padding:10px 0;border-bottom:1px solid #f1f5f9">
+          <label class="form-label" style="padding-top:8px">Description</label>
+          <textarea class="form-input" id="asm-f-desc" rows="3" style="font-size:14px;resize:vertical"></textarea>
+        </div>
+        <div class="form-row" style="display:grid;grid-template-columns:180px 1fr;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid #f1f5f9">
+          <label class="form-label" style="color:#e05a00;font-weight:600">Assembled Date *</label>
+          <input class="form-input" type="date" id="asm-f-date" style="max-width:200px;font-size:14px">
+        </div>
+        <div class="form-row" style="display:grid;grid-template-columns:180px 1fr;align-items:start;gap:12px;padding:10px 0;border-bottom:1px solid #f1f5f9">
+          <label class="form-label" style="color:#e05a00;font-weight:600;padding-top:8px">Quantity to Assemble *</label>
+          <div>
+            <input class="form-input" type="number" id="asm-f-qty" value="1" min="1" style="max-width:160px;font-size:14px" oninput="_asmRefreshBOM()">
+            <div id="asm-f-can-assemble" style="font-size:12px;color:#6b7280;margin-top:4px"></div>
+          </div>
+        </div>
+        <div class="form-row" style="display:grid;grid-template-columns:180px 1fr;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid #f1f5f9">
+          <label class="form-label" style="color:#e05a00;font-weight:600">Warehouse *</label>
+          <select class="form-input" id="asm-f-wh" style="max-width:280px;font-size:14px"></select>
+        </div>
+        <div class="form-row" style="display:grid;grid-template-columns:180px 1fr;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid #f1f5f9">
+          <label class="form-label">Batch / Lot #</label>
+          <input class="form-input" id="asm-f-batch" placeholder="Optional" style="max-width:280px;font-size:14px">
+        </div>
+      </div>
+      <!-- Associated Items (BOM) table -->
+      <div id="asm-bom-section" style="display:none;margin-top:24px">
+        <div style="font-size:13px;font-weight:600;color:#1a1a2e;margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid #e2e6ea">Associated Items</div>
+        <table style="width:100%;border-collapse:collapse">
+          <thead>
+            <tr style="background:#f8fafc;font-size:12px;color:#475569">
+              <th style="padding:8px 12px;text-align:left;border-bottom:1px solid #e2e6ea">Item Details</th>
+              <th style="padding:8px 12px;text-align:center;border-bottom:1px solid #e2e6ea">Qty Required<br><span style="font-weight:400;color:#9ca3af">(per assembly)</span></th>
+              <th style="padding:8px 12px;text-align:center;border-bottom:1px solid #e2e6ea">Total Qty Required</th>
+              <th style="padding:8px 12px;text-align:center;border-bottom:1px solid #e2e6ea">Qty Available</th>
+            </tr>
+          </thead>
+          <tbody id="asm-bom-tbody"></tbody>
+        </table>
+      </div>
+      <!-- Action buttons -->
+      <div style="display:flex;align-items:center;gap:10px;margin-top:28px;padding-top:16px;border-top:2px solid #e2e6ea">
+        <button onclick="_asmFormSave('Draft')" style="padding:9px 20px;border:1px solid #d1d5db;border-radius:6px;background:#fff;color:#374151;font-size:14px;font-weight:500;cursor:pointer" onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background='#fff'">Save as Draft</button>
+        <button onclick="_asmFormSave('Assemble')" style="padding:9px 24px;border:none;border-radius:6px;background:#e05a00;color:#fff;font-size:14px;font-weight:600;cursor:pointer" onmouseover="this.style.background='#b84800'" onmouseout="this.style.background='#e05a00'">Assemble</button>
+        <button onclick="hideNewAssemblyForm()" style="padding:9px 16px;border:none;background:none;color:#6b7280;font-size:14px;cursor:pointer">Cancel</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -5685,6 +5763,11 @@ function completeAssembly(aoId){
 }
 
 function renderAssemblyOrders(){
+  // Make sure we're showing list view, not the new-form view
+  const listView=document.getElementById('asm-list-view');
+  const newView=document.getElementById('asm-new-view');
+  if(listView)listView.style.display='';
+  if(newView)newView.style.display='none';
   let filtered=db.assemblyOrders;
   if(currentStatus&&currentStatus!=='All')filtered=filtered.filter(ao=>ao.status===currentStatus);
   filtered=applySort(filtered,'assembly-orders',{orderNo:ao=>ao.orderNo,date:ao=>ao.date,compositeItem:ao=>ao.compositeItemId,qty:ao=>ao.qty,manufacturedQty:ao=>ao.manufacturedQty||0,cost:ao=>ao.cost||0,status:ao=>ao.status,warehouse:ao=>(db.warehouses.find(w=>w.id===ao.warehouseId)||{}).name||''});
@@ -5700,20 +5783,26 @@ function renderAssemblyOrders(){
       if(bom)itemName=bom.name;
     }
     const batchBadge=ao.batch?`<span style="font-size:10px;background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0;border-radius:3px;padding:1px 5px;margin-left:4px">${ao.batch}</span>`:'';
-    const dueDate=ao.dueDate||ao.date||'—';
+    const displayDate=ao.assembledDate||ao.dueDate||ao.date||'—';
     const isAssembled=ao.status==='Assembled'||ao.status==='Completed';
-    const actionBtns=isAssembled
-      ?`<span style="font-size:11px;color:#16a34a;font-weight:600">✓ Assembled</span><br><span style="font-size:10px;color:#6b7280">${ao.assembledBy?'by '+ao.assembledBy:''}</span>`
-      :`<button class="btn btn-sm" style="font-size:11px;padding:2px 7px;background:#16a34a;color:#fff;border:none;border-radius:4px;cursor:pointer;margin-bottom:2px" onclick="openMarkAssembledModal(${ao.id})">✓ Mark Assembled</button>`;
-    const printBtn=`<button class="btn btn-sm btn-secondary" style="font-size:11px;padding:2px 7px;margin-left:4px" onclick="printAssemblyOrder(${ao.id})">🖨</button>`;
+    const isDraft=ao.status==='Draft';
+    let actionBtns='';
+    if(isAssembled){
+      actionBtns=`<span style="font-size:11px;color:#16a34a;font-weight:600">✓ Assembled</span>`;
+    } else if(isDraft){
+      actionBtns=`<button class="btn btn-sm" style="font-size:11px;padding:2px 8px;background:#6366f1;color:#fff;border:none;border-radius:4px;cursor:pointer" onclick="showNewAssemblyForm(${ao.id})">Edit / Assemble</button>`;
+    } else {
+      actionBtns=`<button class="btn btn-sm" style="font-size:11px;padding:2px 7px;background:#16a34a;color:#fff;border:none;border-radius:4px;cursor:pointer" onclick="openMarkAssembledModal(${ao.id})">✓ Mark Assembled</button>`;
+    }
+    const printBtn=`<button title="Print" style="background:none;border:1px solid #e2e6ea;border-radius:4px;padding:2px 6px;font-size:12px;cursor:pointer;margin-left:4px" onclick="printAssemblyOrder(${ao.id})">🖨</button>`;
     return`<tr>
       <td><span style="font-weight:500">${ao.orderNo}</span>${batchBadge}</td>
-      <td>${dueDate}</td>
+      <td>${displayDate}</td>
       <td style="font-size:12px">${itemName}</td>
-      <td>${ao.qty}</td>
-      <td>${ao.manufacturedQty||0}</td>
+      <td style="text-align:center">${ao.qty}</td>
+      <td style="text-align:center">${ao.manufacturedQty||0}</td>
       <td>${fmt(ao.cost||0)}</td>
-      <td>${badgeHtml(isAssembled?'Completed':ao.status)}</td>
+      <td>${badgeHtml(isAssembled?'Assembled':ao.status)}</td>
       <td>${w?.name||'—'}</td>
       <td style="white-space:nowrap">${actionBtns}${printBtn}</td>
     </tr>`;
@@ -6441,7 +6530,7 @@ function openAddModal(view){
   if(view==='vendor-credits'){openVCPage();return;}
   if(view==='transfer-orders'){openTransferForm();return;}
   if(view==='adjustments'){openAdjustmentModal();return;}
-  if(view==='assembly-orders'){openAssemblyModal();return;}
+  if(view==='assembly-orders'){showNewAssemblyForm();return;}
   if(view==='boms'){openBOMModal();return;}
   if(view==='kits'){openKitModal();return;}
   if(view==='picklists'){openPicklistModal();return;}
@@ -10496,6 +10585,217 @@ function adjCalcDiff(idx){
 }
 
 // ── ASSEMBLY ORDER MODAL ──
+// ══════════════════════════════════════════════════════
+//  ASSEMBLY FULL-PAGE FORM  (matches Zoho Inventory UX)
+// ══════════════════════════════════════════════════════
+function showNewAssemblyForm(editAoId){
+  document.getElementById('asm-list-view').style.display='none';
+  document.getElementById('asm-new-view').style.display='';
+  const today=new Date().toISOString().slice(0,10);
+  // Populate warehouse dropdown
+  const whSel=document.getElementById('asm-f-wh');
+  if(whSel){
+    whSel.innerHTML=(db.warehouses||[]).map(w=>`<option value="${w.id}">${w.name}</option>`).join('');
+    const usWh=(db.warehouses||[]).find(w=>(w.name||'').toLowerCase().includes('hey honey us'));
+    if(usWh)whSel.value=usWh.id;
+  }
+  if(editAoId){
+    // Editing existing draft
+    const ao=db.assemblyOrders.find(x=>x.id===editAoId||String(x.id)===String(editAoId));
+    if(ao){
+      document.getElementById('asm-form-title').textContent='Edit Assembly';
+      document.getElementById('asm-f-number').value=ao.orderNo||'';
+      document.getElementById('asm-f-date').value=ao.assembledDate||ao.dueDate||today;
+      document.getElementById('asm-f-qty').value=ao.qty||1;
+      document.getElementById('asm-f-batch').value=ao.batch||'';
+      document.getElementById('asm-f-desc').value=ao.notes||'';
+      if(whSel&&ao.warehouseId)whSel.value=ao.warehouseId;
+      document.getElementById('asm-new-view').dataset.editId=editAoId;
+      if(ao.compositeItemId){
+        const ci=(db.compositeItems||[]).find(i=>String(i.id)===String(ao.compositeItemId));
+        if(ci){
+          document.getElementById('asm-ci-id').value=ci.id;
+          document.getElementById('asm-ci-search').value=ci.name+(ci.sku?' ('+ci.sku+')':'');
+          document.getElementById('asm-ci-sku').textContent='SKU: '+(ci.sku||'');
+          _asmRefreshBOM();
+        }
+      }
+      return;
+    }
+  }
+  document.getElementById('asm-form-title').textContent='New Assembly';
+  document.getElementById('asm-new-view').dataset.editId='';
+  document.getElementById('asm-f-number').value='BUN-'+String(Date.now()).slice(-5);
+  document.getElementById('asm-f-date').value=today;
+  document.getElementById('asm-f-qty').value=1;
+  document.getElementById('asm-f-batch').value='';
+  document.getElementById('asm-f-desc').value='';
+  document.getElementById('asm-ci-id').value='';
+  document.getElementById('asm-ci-search').value='';
+  document.getElementById('asm-ci-sku').textContent='';
+  document.getElementById('asm-bom-section').style.display='none';
+  document.getElementById('asm-f-can-assemble').textContent='';
+  setTimeout(()=>document.getElementById('asm-ci-search').focus(),80);
+}
+
+function hideNewAssemblyForm(){
+  document.getElementById('asm-new-view').style.display='none';
+  document.getElementById('asm-list-view').style.display='';
+  renderAssemblyOrders();
+}
+
+function _asmCiSearch(q){
+  const dd=document.getElementById('asm-ci-dd');if(!dd)return;
+  const allCI=(db.compositeItems||[]).filter(ci=>(ci.components||[]).length>0&&ci.status!=='Inactive');
+  const sq=(q||'').toLowerCase().trim();
+  const results=sq?allCI.filter(ci=>ci.name.toLowerCase().includes(sq)||(ci.sku||'').toLowerCase().includes(sq)):allCI.slice(0,60);
+  if(!results.length){
+    dd.innerHTML='<div style="padding:10px 14px;color:#9ca3af;font-size:13px">No composite items with BOM found</div>';
+    dd.style.display='block';return;
+  }
+  dd.innerHTML=results.map(ci=>`
+    <div onclick="_asmCiSelect(${ci.id},${JSON.stringify(ci.name)},${JSON.stringify(ci.sku||'')})"
+      style="padding:9px 14px;cursor:pointer;border-bottom:1px solid #f3f4f6;display:flex;justify-content:space-between;align-items:center"
+      onmouseover="this.style.background='#f5f3ff'" onmouseout="this.style.background=''">
+      <span style="font-size:13px;font-weight:500">${ci.name}</span>
+      <span style="font-size:11px;color:#9ca3af;margin-left:8px">${ci.sku||''}</span>
+    </div>`).join('');
+  dd.style.display='block';
+  setTimeout(()=>document.addEventListener('click',function _cl(e){
+    const s=document.getElementById('asm-ci-search');
+    if(s&&!s.contains(e.target)&&!dd.contains(e.target)){dd.style.display='none';document.removeEventListener('click',_cl);}
+  }),100);
+}
+
+function _asmCiSelect(id,name,sku){
+  document.getElementById('asm-ci-id').value=id;
+  document.getElementById('asm-ci-search').value=name+(sku?' ('+sku+')':'');
+  document.getElementById('asm-ci-sku').textContent=sku?'SKU: '+sku:'';
+  document.getElementById('asm-ci-dd').style.display='none';
+  _asmRefreshBOM();
+}
+
+function _asmRefreshBOM(){
+  const ciId=parseInt(document.getElementById('asm-ci-id')?.value||'0');
+  const qty=parseFloat(document.getElementById('asm-f-qty')?.value)||1;
+  const ci=(db.compositeItems||[]).find(i=>i.id===ciId);
+  const bomSection=document.getElementById('asm-bom-section');
+  const canEl=document.getElementById('asm-f-can-assemble');
+  if(!ci||!(ci.components||[]).length){
+    if(bomSection)bomSection.style.display='none';
+    return;
+  }
+  // "You can assemble X units from available stock"
+  let canAssemble=Infinity;
+  (ci.components||[]).forEach(c=>{
+    const item=resolveBOMItem(c.itemId,c.src);
+    const perUnit=parseFloat(c.qty)||1;
+    if(perUnit>0&&item){canAssemble=Math.min(canAssemble,Math.floor((parseFloat(item.onHand)||0)/perUnit));}
+  });
+  if(canEl)canEl.innerHTML=canAssemble===Infinity?''
+    :`<span style="color:${canAssemble>=qty?'#16a34a':'#e53e3e'}">You can assemble <strong>${canAssemble}</strong> unit${canAssemble!==1?'s':''} from available stock.</span>`;
+  // Build BOM rows
+  const rows=(ci.components||[]).map(c=>{
+    const item=resolveBOMItem(c.itemId,c.src);
+    const perUnit=parseFloat(c.qty)||0;
+    const totalNeeded=Math.round(perUnit*qty*100)/100;
+    const avail=parseFloat(item?.onHand)||0;
+    const short=avail<totalNeeded;
+    return`<tr style="border-bottom:1px solid #f1f5f9">
+      <td style="padding:10px 12px">
+        <div style="font-weight:500;font-size:13px">${item?item.name:'<span style="color:#e53e3e">Unknown item</span>'}</div>
+        <div style="font-size:11px;color:#9ca3af;margin-top:2px">${item?'SKU: '+(item.sku||'—'):''}</div>
+      </td>
+      <td style="padding:10px 12px;text-align:center;font-size:13px">${perUnit}</td>
+      <td style="padding:10px 12px;text-align:center;font-size:13px;font-weight:600">${totalNeeded}</td>
+      <td style="padding:10px 12px;text-align:center;font-size:13px;font-weight:600;color:${short?'#e53e3e':'#16a34a'}">${avail} pcs${short?' ⚠':''}</td>
+    </tr>`;
+  }).join('');
+  const tbody=document.getElementById('asm-bom-tbody');
+  if(tbody)tbody.innerHTML=rows;
+  if(bomSection)bomSection.style.display='';
+}
+
+function _asmFormSave(action){
+  const ciId=parseInt(document.getElementById('asm-ci-id').value||'0');
+  if(!ciId){showToast('Please select a composite item','warning');document.getElementById('asm-ci-search').focus();return;}
+  const ci=(db.compositeItems||[]).find(i=>i.id===ciId);
+  if(!ci){showToast('Item not found','warning');return;}
+  if(!(ci.components||[]).length){showToast('This item has no BOM components — cannot assemble','warning');return;}
+  const asmNum=(document.getElementById('asm-f-number').value||'').trim();
+  if(!asmNum){showToast('Assembly # is required','warning');document.getElementById('asm-f-number').focus();return;}
+  const assembledDate=document.getElementById('asm-f-date').value;
+  if(!assembledDate){showToast('Assembled Date is required','warning');document.getElementById('asm-f-date').focus();return;}
+  const qty=parseFloat(document.getElementById('asm-f-qty').value)||0;
+  if(qty<1){showToast('Quantity must be at least 1','warning');return;}
+  const whId=document.getElementById('asm-f-wh').value;
+  const batch=(document.getElementById('asm-f-batch').value||'').trim();
+  const notes=(document.getElementById('asm-f-desc').value||'').trim();
+  const editId=document.getElementById('asm-new-view').dataset.editId;
+  if(!db.assemblyOrders)db.assemblyOrders=[];
+  const isDraft=action==='Draft';
+  const aoData={
+    orderNo:asmNum,
+    compositeItemId:ciId,
+    compositeItemName:ci.name,
+    compositeSku:ci.sku||'',
+    qty,
+    manufacturedQty:isDraft?0:qty,
+    cost:Math.round(calcAssemblyCost(ci)*qty*100)/100,
+    assembledDate,
+    dueDate:assembledDate,
+    warehouseId:parseInt(whId)||whId,
+    batch,notes,
+    status:isDraft?'Draft':'Assembled',
+    createdAt:new Date().toISOString()
+  };
+  if(editId){
+    const idx=db.assemblyOrders.findIndex(x=>String(x.id)===String(editId));
+    if(idx>=0){Object.assign(db.assemblyOrders[idx],aoData);aoData.id=db.assemblyOrders[idx].id;}
+  } else {
+    aoData.id=Date.now();
+    db.assemblyOrders.unshift(aoData);
+  }
+  if(!isDraft){
+    // Immediately move inventory
+    const whIdStr=String(whId);
+    const negComps=[];
+    (ci.components||[]).forEach(comp=>{
+      const deductQty=(parseFloat(comp.qty)||0)*qty;
+      if(!deductQty)return;
+      const cItem=resolveBOMItem(comp.itemId,comp.src);
+      if(cItem&&(parseFloat(cItem.onHand)||0)-deductQty<0)
+        negComps.push({item:cItem,current:parseFloat(cItem.onHand)||0,needed:deductQty});
+    });
+    let approvalReason=null;
+    if(negComps.length){
+      const list=negComps.map(n=>`• ${n.item.name}: ${n.current} on hand, need ${n.needed}`).join('\n');
+      const pw=prompt(`⚠️ INSUFFICIENT STOCK\n\n${list}\n\nEnter admin password to override:`);
+      if(!pw){showToast('Assembly cancelled — insufficient stock','warning');db.assemblyOrders.shift();return;}
+      if(pw!==APP_PASSWORD){alert('Incorrect password.');db.assemblyOrders.shift();return;}
+      const r=prompt('Reason for proceeding (required):');
+      if(!r||!r.trim()){db.assemblyOrders.shift();return;}
+      approvalReason=r.trim();
+    }
+    (ci.components||[]).forEach(comp=>{
+      const deductQty=(parseFloat(comp.qty)||0)*qty;
+      if(!deductQty)return;
+      const cItem=resolveBOMItem(comp.itemId,comp.src);
+      if(cItem)_deductItemStock(cItem,deductQty,whIdStr,{type:'assembly',approvalReason,reason:'Assembly: '+asmNum});
+    });
+    ci.onHand=(parseFloat(ci.onHand)||0)+qty;
+    if(!ci.warehouseStock)ci.warehouseStock={};
+    ci.warehouseStock[whIdStr]=(parseFloat(ci.warehouseStock[whIdStr])||0)+qty;
+    const newCost=Math.round(calcAssemblyCost(ci)*100)/100;
+    if(newCost>0)ci.costPrice=newCost;
+    recalcDerivedCosts();
+  }
+  saveDB();
+  hideNewAssemblyForm();
+  showToast(isDraft?`✓ Assembly ${asmNum} saved as draft`:`✓ Assembly ${asmNum} complete — inventory updated`);
+}
+
+// Legacy modal kept for backward compat — now routes to full-page form
 function openAssemblyModal(){
   const whOpts=(db.warehouses||[]).map(w=>`<option value="${w.id}">${w.name}</option>`).join('');
   const asmNo='ASM-'+String(Date.now()).slice(-5);
