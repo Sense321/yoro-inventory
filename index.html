@@ -5338,10 +5338,15 @@ function _populateBrandSwitcher(){
   // Sidebar select (legacy fallback)
   const sel=document.getElementById('active-brand-select');
   if(sel){
-    const cur=sel.value;
-    const brands=(db.brands||[]).map(b=>b.name).sort();
-    sel.innerHTML=`<option value="">🏷 All Brands</option>`+brands.map(n=>`<option value="${n}"${n===cur?' selected':''}>${n}</option>`).join('');
-    if(cur&&brands.includes(cur))sel.value=cur;
+    const cur=_activeBrand||sel.value;
+    const userBrands=currentUserBrands();
+    let brands=(db.brands||[]).map(b=>b.name).sort();
+    // Restrict list to user's allowed brands
+    if(userBrands)brands=brands.filter(b=>userBrands.some(ub=>_brandEq(ub,b)));
+    // Restricted users get no "All Brands" option
+    const allOption=userBrands?'':' <option value="">🏷 All Brands</option>';
+    sel.innerHTML=allOption+brands.map(n=>`<option value="${n}"${_brandEq(n,cur)?' selected':''}>${n}</option>`).join('');
+    if(cur&&brands.find(b=>_brandEq(b,cur)))sel.value=cur;
     sel.style.background=_activeBrand?'rgba(255,255,255,.25)':'rgba(255,255,255,.1)';
   }
   // Topbar brand badge
@@ -5362,20 +5367,23 @@ function showBrandPicker(){
   const overlay=document.getElementById('brand-picker-overlay');
   const cards=document.getElementById('brand-picker-cards');
   if(!overlay||!cards)return;
-  // Build unified brand list: db.brands + any unique item.brand values not already covered
+  const userAllowedBrands=currentUserBrands(); // null = no restriction (admin)
+  // Build unified brand list filtered to what this user can access
   const configuredBrands=(db.brands||[]);
   const allItems=[...(db.items||[]),...(db.compositeItems||[])];
   const itemBrandValues=[...new Set(allItems.map(i=>i.brand).filter(Boolean))];
-  // For each item brand value, check if it matches a configured brand (case-insensitive)
-  // If not, create an "orphan" entry so the user can still filter by it
   const orphanBrands=itemBrandValues
     .filter(v=>!configuredBrands.find(b=>_brandEq(b.name,v)))
     .map(v=>({name:v,_orphan:true,primaryColor:'#6b7280'}));
-  const allBrands=[...configuredBrands,...orphanBrands].sort((a,b)=>a.name.localeCompare(b.name));
+  let allBrands=[...configuredBrands,...orphanBrands].sort((a,b)=>a.name.localeCompare(b.name));
+  // Restrict to user's allowed brands
+  if(userAllowedBrands)allBrands=allBrands.filter(b=>userAllowedBrands.some(ab=>_brandEq(ab,b.name)));
+  // Hide "View All Brands" button for restricted users
+  const viewAllBtn=overlay.querySelector('button[onclick*="setActiveBrand(\'\')"]');
+  if(viewAllBtn)viewAllBtn.style.display=userAllowedBrands?'none':'';
   if(allBrands.length===0){
     cards.innerHTML='<div style="text-align:center;color:#6b7280;font-size:13px;padding:20px">No brands configured yet.<br><a href="#" onclick="closeBrandPicker();showSettingsPanel(\'brands\')" style="color:var(--primary)">Add a brand in Settings</a></div>';
   } else {
-    // Count items per brand for display
     const countFor=bName=>allItems.filter(i=>_brandEq(i.brand,bName)).length;
     cards.innerHTML=allBrands.map(b=>{
       const isActive=_brandEq(_activeBrand,b.name);
@@ -5403,6 +5411,48 @@ function closeBrandPicker(){
   const overlay=document.getElementById('brand-picker-overlay');
   if(overlay)overlay.style.display='none';
   document.body.style.overflow='';
+}
+
+// ── Brand select HTML (for item/composite item forms) ─────────────────────────
+// Returns a <select> restricted to what the current user can access.
+// Auto-selects if user is restricted to one brand; otherwise uses savedValue or _activeBrand.
+function _brandSelectHtml(elId, savedValue){
+  const userBrands=currentUserBrands();
+  const allBrands=(db.brands||[]).map(b=>b.name);
+  const available=userBrands?allBrands.filter(b=>userBrands.some(ub=>_brandEq(ub,b))):allBrands;
+  // Auto-select: if user is restricted to 1 brand OR _activeBrand matches one, use it
+  const autoVal=savedValue||(userBrands&&userBrands.length===1?userBrands[0]:_activeBrand)||'';
+  const opts=available.map(b=>`<option value="${b}" ${_brandEq(b,autoVal)?'selected':''}>${b}</option>`).join('');
+  return `<select class="form-input" id="${elId}"><option value="">Select Brand</option>${opts}</select>`;
+}
+
+// ── Category select + add-new HTML ────────────────────────────────────────────
+function _categorySelectHtml(elId, savedValue, extraStyle=''){
+  const cats=db.categories||['Skincare','Haircare','Cosmetics','Body Care','Fragrance','Supplements','Tools & Accessories'];
+  const opts=cats.map(c=>`<option value="${c}" ${c===savedValue?'selected':''}>${c}</option>`).join('');
+  return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap${extraStyle?';'+extraStyle:''}">
+    <select class="form-input" id="${elId}" style="flex:1;min-width:150px">
+      <option value="">Select a category</option>
+      ${opts}
+    </select>
+    <button type="button" onclick="_addCategoryInline('${elId}')" title="Add new category" style="padding:5px 10px;border:1.5px dashed var(--primary);border-radius:6px;background:#fff8f5;color:var(--primary);font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;flex-shrink:0">+ New</button>
+  </div>`;
+}
+
+function _addCategoryInline(selId){
+  const name=prompt('New category name:','');
+  if(!name||!name.trim())return;
+  const cat=name.trim();
+  if(!db.categories)db.categories=['Skincare','Haircare','Cosmetics','Body Care','Fragrance','Supplements','Tools & Accessories'];
+  if(!db.categories.includes(cat)){db.categories.push(cat);saveDB();}
+  // Re-populate the select and select the new value
+  const sel=document.getElementById(selId);
+  if(!sel)return;
+  if(![...sel.options].find(o=>o.value===cat)){
+    const opt=document.createElement('option');opt.value=cat;opt.textContent=cat;sel.appendChild(opt);
+  }
+  sel.value=cat;
+  showToast(`✓ Category "${cat}" added`);
 }
 
 function setActiveBrand(name){
@@ -7954,10 +8004,7 @@ function openItemPanel(data){
     <!-- Category -->
     <div class="form-row">
       <label class="form-label">Category</label>
-      <select class="form-input" id="si-category">
-        <option value="">Select a category</option>
-        ${catOpts}
-      </select>
+      ${_categorySelectHtml('si-category',data.category||'')}
     </div>
 
     <!-- Returnable -->
@@ -8035,7 +8082,7 @@ function openItemPanel(data){
       </div>
       <div>
         <label class="form-label">Brand</label>
-        <input class="form-input" id="si-brand" placeholder="Select or Add Brand" value="${data.brand||''}">
+        ${_brandSelectHtml('si-brand',data.brand||'')}
       </div>
     </div>
     <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
@@ -8322,7 +8369,7 @@ function saveItemPanel(){
     weightUnit:document.getElementById('si-wt-unit').value,
     // Additional
     manufacturer:document.getElementById('si-mfr').value.trim(),
-    brand:document.getElementById('si-brand').value.trim(),
+    brand:document.getElementById('si-brand')?.value||'',
     upc:document.getElementById('si-upc').value.trim(),
     mpn:document.getElementById('si-mpn').value.trim(),
     ean:document.getElementById('si-ean').value.trim(),
@@ -8446,10 +8493,7 @@ function openCompositePanel(data){
     </div>
     <div class="form-row">
       <label class="form-label">Category</label>
-      <select class="form-input" id="ci-category">
-        <option value="">Select a category</option>
-        ${catOpts}
-      </select>
+      ${_categorySelectHtml('ci-category',data.category||'')}
     </div>
     <div class="form-row" style="align-items:center">
       <label class="form-label">Returnable Item</label>
@@ -8465,6 +8509,7 @@ function openCompositePanel(data){
           <tr>
             <th style="text-align:left;padding:8px 10px">Item Details</th>
             <th style="text-align:right;padding:8px 10px">Quantity</th>
+            <th style="text-align:center;padding:8px 6px;font-size:10px">Unit<br><span style="color:#6366f1;font-weight:400">g→kg auto</span></th>
             <th style="text-align:right;padding:8px 10px">Selling Price</th>
             <th style="text-align:right;padding:8px 10px">Cost Price</th>
             <th style="width:40px"></th>
@@ -8584,7 +8629,7 @@ function openCompositePanel(data){
       </div>
       <div>
         <label class="form-label">Brand</label>
-        <input class="form-input" id="ci-brand" placeholder="Select or Add Brand" value="${data.brand||''}">
+        ${_brandSelectHtml('ci-brand',data.brand||'')}
       </div>
     </div>
     <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
@@ -8702,13 +8747,26 @@ function addCIRow(isService, returnEl, existingComp){
   const curV=existingComp?`${existingComp.src||'items'}:${existingComp.itemId}`:'';
   const curItem=existingComp?[...(db.items||[]),...(db.compositeItems||[])].find(i=>String(i.id)===String(existingComp.itemId)):null;
   const curL=curItem?`${curItem.name}${curItem.sku?' ('+curItem.sku+')':''}`:curV;
+  const existingUnit=existingComp?.qtyUnit||'';
   tr.innerHTML=`
     <td style="padding:6px 8px;min-width:200px">
       ${isService
         ? `<input class="form-input" placeholder="Service name" style="font-size:12px;padding:5px 8px">`
         : `<div id="ci-item-${n}"></div>`}
     </td>
-    <td style="padding:6px 8px;text-align:right"><input type="number" value="${existingComp?.qty||1}" min="0" style="width:60px;border:1px solid #e5e7eb;border-radius:4px;padding:5px;font-size:12px;text-align:right" onchange="ciRecalcTotals()"></td>
+    <td style="padding:6px 8px;text-align:right">
+      <input type="number" value="${existingComp?(existingComp.qtyDisplay||existingComp.qty||1):1}" min="0" class="ci-qty" style="width:60px;border:1px solid #e5e7eb;border-radius:4px;padding:5px;font-size:12px;text-align:right" onchange="ciUpdateGramHint(${n});ciRecalcTotals()">
+    </td>
+    <td style="padding:6px 4px;text-align:center">
+      <select class="ci-qty-unit" style="font-size:11px;border:1px solid #e5e7eb;border-radius:4px;padding:3px 2px;width:58px" onchange="ciUpdateGramHint(${n})">
+        <option value="" ${!existingUnit?'selected':''}>Each</option>
+        <option value="g" ${existingUnit==='g'?'selected':''}>g</option>
+        <option value="kg" ${existingUnit==='kg'?'selected':''}>kg</option>
+        <option value="ml" ${existingUnit==='ml'?'selected':''}>ml</option>
+        <option value="l" ${existingUnit==='l'?'selected':''}>l</option>
+      </select>
+      <div id="ci-gram-hint-${n}" style="font-size:9px;color:#6366f1;margin-top:2px;min-height:10px"></div>
+    </td>
     <td style="padding:6px 8px;text-align:right"><input type="number" placeholder="0.00" class="ci-sell" value="${existingComp?.sellPrice||''}" style="width:80px;border:1px solid #e5e7eb;border-radius:4px;padding:5px;font-size:12px;text-align:right" onchange="ciRecalcTotals()"></td>
     <td style="padding:6px 8px;text-align:right"><input type="number" placeholder="0.00" class="ci-cost" value="${existingComp?.costPrice||''}" style="width:80px;border:1px solid #e5e7eb;border-radius:4px;padding:5px;font-size:12px;text-align:right" onchange="ciRecalcTotals()"></td>
     <td style="padding:6px 8px;text-align:center"><button onclick="this.closest('tr').remove();ciRecalcTotals()" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:14px">✕</button></td>`;
@@ -8724,6 +8782,21 @@ function addCIRow(isService, returnEl, existingComp){
 }
 
 function addCIServiceRow(){addCIRow(true);}
+
+// Show kg equivalent when grams are entered
+function ciUpdateGramHint(rowId){
+  const tr=document.querySelector(`tr[data-ci-row="${rowId}"]`);
+  if(!tr)return;
+  const qtyEl=tr.querySelector('.ci-qty');
+  const unitSel=tr.querySelector('.ci-qty-unit');
+  const hint=document.getElementById(`ci-gram-hint-${rowId}`);
+  if(!hint||!qtyEl||!unitSel)return;
+  const qty=parseFloat(qtyEl.value)||0;
+  const unit=unitSel.value;
+  if(unit==='g'&&qty>0){hint.textContent=`= ${(qty/1000).toFixed(4)} kg`;}
+  else if(unit==='ml'&&qty>0){hint.textContent=`= ${(qty/1000).toFixed(4)} l`;}
+  else{hint.textContent='';}
+}
 
 function saveCompositePanel(){
   const name=document.getElementById('ci-name').value.trim();
@@ -8746,10 +8819,18 @@ function saveCompositePanel(){
     const itemSrc=colonIdx>0?rawVal.substring(0,colonIdx):'items';
     const itemIdRaw=colonIdx>0?rawVal.substring(colonIdx+1):rawVal;
     const itemId=parseInt(itemIdRaw)||itemIdRaw;
+    const qtyRaw=parseFloat(inputs[0]?.value)||1;
+    const qtyUnit=tr.querySelector('.ci-qty-unit')?.value||'';
+    // Convert g→kg and ml→l for inventory deduction (stored items are in kg/l)
+    let qtyForInventory=qtyRaw;
+    if(qtyUnit==='g')qtyForInventory=qtyRaw/1000;
+    else if(qtyUnit==='ml')qtyForInventory=qtyRaw/1000;
     components.push({
       itemId,
       src:itemSrc,
-      qty:parseFloat(inputs[0]?.value)||1,
+      qty:qtyForInventory,      // actual qty deducted from stock (in item's own unit)
+      qtyDisplay:qtyRaw,        // what the user entered (for display)
+      qtyUnit,                  // unit the user entered in (g, kg, ml, l, or '' = Each)
       sellPrice:parseFloat(inputs[1]?.value)||0,
       costPrice:parseFloat(inputs[2]?.value)||0,
     });
@@ -8782,7 +8863,7 @@ function saveCompositePanel(){
     weight:parseFloat(document.getElementById('ci-weight').value)||'',
     weightUnit:document.getElementById('ci-wt-unit').value,
     manufacturer:document.getElementById('ci-mfr').value.trim(),
-    brand:document.getElementById('ci-brand').value.trim(),
+    brand:document.getElementById('ci-brand')?.value||'',
     upc:document.getElementById('ci-upc').value.trim(),
     mpn:document.getElementById('ci-mpn').value.trim(),
     ean:document.getElementById('ci-ean').value.trim(),
@@ -18513,16 +18594,27 @@ async function initApp(){
   applyPermissionUI();
   recalcDerivedCosts();
   _normalizeBrandNames(); // fix case mismatches between item.brand and db.brands[].name
-  // Restore last active brand from localStorage
-  const _savedBrand=localStorage.getItem('hhp_active_brand');
-  if(_savedBrand)_activeBrand=_savedBrand;
+  // If user has exactly one allowed brand, lock them into it immediately — no picker needed
+  const _userBrandsOnLogin=currentUserBrands();
+  if(_userBrandsOnLogin&&_userBrandsOnLogin.length===1){
+    _activeBrand=_userBrandsOnLogin[0];
+    localStorage.setItem('hhp_active_brand',_activeBrand);
+  } else {
+    // Restore last active brand from localStorage (but only if it's one the user is allowed to see)
+    const _savedBrand=localStorage.getItem('hhp_active_brand');
+    if(_savedBrand){
+      const _allowed=!_userBrandsOnLogin||_userBrandsOnLogin.includes(_savedBrand);
+      if(_allowed)_activeBrand=_savedBrand;
+      else if(_userBrandsOnLogin&&_userBrandsOnLogin.length>0){_activeBrand=_userBrandsOnLogin[0];localStorage.setItem('hhp_active_brand',_activeBrand);}
+    }
+  }
   renderShopifyCard();
   _populateBrandSwitcher();
   // Determine how many brands exist (configured + orphan item brands)
   const _allItemBrands=[...new Set([...(db.items||[]),...(db.compositeItems||[])].map(i=>i.brand).filter(Boolean))];
   const _totalBrands=Math.max((db.brands||[]).length,_allItemBrands.length);
-  // Auto-show brand picker on login only when multiple brands exist and no brand was saved
-  if(_totalBrands>1&&!_activeBrand){
+  // Auto-show brand picker on login only when multiple brands exist, no brand was saved, and user can choose
+  if(_totalBrands>1&&!_activeBrand&&(!_userBrandsOnLogin||_userBrandsOnLogin.length>1)){
     setTimeout(()=>showBrandPicker(),150);
   }
   const lastView=localStorage.getItem('hhp_last_view')||'dashboard';
