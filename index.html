@@ -1503,6 +1503,15 @@ table tr.clickable-row:hover td{background:#fff8f5}
       <div id="shopify-mappings-body" style="padding:16px 20px"></div>
     </div>
 
+    <!-- Walmart Mappings -->
+    <div id="walmart-mappings-wrap" class="section" style="display:none;margin-bottom:20px;border:1.5px solid #0071dc">
+      <div class="section-header" style="background:#e8f4fd">
+        <div class="section-title" style="color:#0071dc">🔵 Walmart Pending SKU Mappings</div>
+        <span style="font-size:12px;color:#0052a5">Map unrecognized Walmart SKUs to items — held orders release automatically</span>
+      </div>
+      <div id="walmart-mappings-body" style="padding:16px 20px"></div>
+    </div>
+
     <!-- ShipStation Shipment Sync -->
     <div class="section" style="margin-bottom:20px;border:1.5px solid #1976d2">
       <div class="section-header" style="background:#e3f2fd">
@@ -2904,6 +2913,7 @@ let db={
   preferences:{currency:'USD',taxName:'Tax',taxRate:0,preventNegativeStock:true,lowStockWarning:true,autoDeductOnAssembly:true,valuation:'FIFO'},
   skuMappings:{},
   shopify:{shop:'',accessToken:'',apiVersion:'2025-04',connected:false,proxyUrl:'',lastSync:{products:null,orders:null,customers:null},ordersFromDate:'',pendingMappings:[],pendingOrders:[]},
+  walmart:{lastSync:{orders:null},pendingMappings:[],pendingOrders:[]},
   nextId:{items:1,warehouses:1,customers:1,vendors:1,salesOrders:1,purchaseOrders:1,invoices:1,bills:1,adjustments:1,boms:1,assemblyOrders:1,kits:1,compositeItems:1,itemGroups:1,priceLists:1,paymentsMade:1,paymentsReceived:1,salesReturns:1,creditNotes:1,purchaseReceives:1,vendorCredits:1,expenses:1,transferOrders:1,picklists:1,packages:1,shipments:1,moveOrders:1,putaways:1,integrations:1,reorderTasks:1,tasks:1,qvcOrders:1,macysOrders:1}
 };
 
@@ -3071,6 +3081,10 @@ function loadDB(){
   if(!db.shopify.pendingMappings)db.shopify.pendingMappings=[];
   if(!db.shopify.pendingOrders)db.shopify.pendingOrders=[];
   if(db.shopify.ordersFromDate===undefined)db.shopify.ordersFromDate='';
+  if(!db.walmart)db.walmart={lastSync:{orders:null},pendingMappings:[],pendingOrders:[]};
+  if(!db.walmart.pendingMappings)db.walmart.pendingMappings=[];
+  if(!db.walmart.pendingOrders)db.walmart.pendingOrders=[];
+  if(!db.walmart.lastSync)db.walmart.lastSync={orders:null};
   if(!db.skuMappings)db.skuMappings={};
   if(!db.mappingHidden)db.mappingHidden={};
   // Remove any corrupted skuMappings entries (null/NaN itemId from a prior bug where NaN was stored)
@@ -5152,7 +5166,8 @@ function renderIntegrations(){
         <span style="font-size:11px;font-weight:600;color:${statusColor};background:${statusColor}15;border:1px solid ${statusColor}40;border-radius:20px;padding:2px 10px;white-space:nowrap">${statusLabel}</span>
         <div style="display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end">
           ${(p.write||[]).length?`<button class="btn btn-primary btn-sm" style="font-size:11px;padding:2px 10px" onclick="pushIntegrationNow(${ig.id})" id="push-btn-${ig.id}">⚡ Push Now</button>`:''}
-          ${(p.read||[]).length?`<button class="btn btn-outline btn-sm" style="font-size:11px;padding:2px 8px" onclick="${ig.type.startsWith('amazon')?`syncAmazonOrders(${ig.id})`:`pullIntegrationNow(${ig.id})`}" id="pull-btn-${ig.id}">↓ Pull Now</button>`:''}
+          ${ig.type==='walmart'?`<button class="btn btn-outline btn-sm" style="font-size:11px;padding:2px 8px;color:#0071dc;border-color:#0071dc" onclick="testWalmartConnection(${ig.id})">🔌 Test</button>`:''}
+          ${ig.type==='walmart'?`<button class="btn btn-outline btn-sm" style="font-size:11px;padding:2px 8px" onclick="syncWalmartOrders(${ig.id})" id="pull-btn-${ig.id}">↓ Sync Orders</button>`:(p.read||[]).length?`<button class="btn btn-outline btn-sm" style="font-size:11px;padding:2px 8px" onclick="${ig.type.startsWith('amazon')?`syncAmazonOrders(${ig.id})`:`pullIntegrationNow(${ig.id})`}" id="pull-btn-${ig.id}">↓ Pull Now</button>`:''}
           <button class="btn btn-sm" style="font-size:11px;padding:2px 8px;background:#f3f4f6" onclick="editIntegration(${ig.id})">Edit</button>
           <button class="btn btn-sm" style="font-size:11px;padding:2px 6px;background:#fee2e2;color:#dc2626;border-color:#fca5a5" onclick="deleteIntegration(${ig.id})">✕</button>
         </div>
@@ -5222,6 +5237,7 @@ function _addToAddressBook(customer, addr){
 function _getMarketplaceCustomerForOrder(so){
   const src=(so.source||so.channel||'').toLowerCase();
   if(so.shopifyOrderId||src.includes('shopify'))return getOrCreateShopifyWebsiteCustomer();
+  if(so.walmartOrderId||src.includes('walmart'))return getOrCreateWalmartCustomer();
   if(src.includes('amazon')||src.includes('fba'))return getOrCreateAmazonFBACustomer();
   if(src.includes('qvc')){const ch=(db.wholesaleChannels||[]).find(w=>w.channelId==='qvc');return ch?db.customers.find(c=>c.id===ch.customerId):null;}
   if(src.includes('macy')){const ch=(db.wholesaleChannels||[]).find(w=>w.channelId==='macys');return ch?db.customers.find(c=>c.id===ch.customerId):null;}
@@ -6538,6 +6554,7 @@ async function pushIntegrationNow(id){
 function pullIntegrationNow(id){
   const ig=(db.integrations||[]).find(x=>x.id===id);
   if(!ig)return;
+  if(ig.type==='walmart'){syncWalmartOrders(id);return;}
   const btn=document.getElementById('pull-btn-'+id);
   const status=document.getElementById('push-status-'+id);
   if(btn){btn.disabled=true;btn.textContent='Pulling…';}
@@ -17221,6 +17238,404 @@ function getOrCreateAmazonFBACustomer(){
   let c=db.customers.find(c=>c.amazonFBA);
   if(!c){c={id:db.nextId.customers++,name:'Amazon FBA',companyName:'Amazon',email:'',phone:'',city:'',receivables:0,status:'Active',amazonFBA:true};db.customers.push(c);saveDB();}
   return c;
+}
+
+function getOrCreateWalmartCustomer(){
+  let c=db.customers.find(c=>c.walmartMarketplace);
+  if(!c){c={id:db.nextId.customers++,name:'Walmart',companyName:'Walmart Marketplace',email:'',phone:'',city:'',receivables:0,status:'Active',walmartMarketplace:true,soPrefix:'WAL',terms:'Net 30'};db.customers.push(c);saveDB();}
+  return c;
+}
+
+async function walmartFetch(endpoint, opts={}){
+  const ig=(db.integrations||[]).find(i=>i.type==='walmart');
+  if(!ig)throw new Error('No Walmart integration configured');
+  const clientId=ig.credentials?.clientId||'';
+  const clientSecret=ig.credentials?.clientSecret||'';
+  const resp=await fetch('/walmart-proxy',{
+    method:'POST',
+    headers:authHeaders(),
+    body:JSON.stringify({clientId,clientSecret,endpoint,method:opts.method||'GET',params:opts.params||{}})
+  });
+  if(!resp.ok){const t=await resp.text();throw new Error(`Walmart API ${resp.status}: ${t}`);}
+  return resp.json();
+}
+
+async function testWalmartConnection(igId){
+  const ig=(db.integrations||[]).find(i=>i.id===igId);
+  if(!ig){showToast('Integration not found');return;}
+  const btn=document.getElementById('push-status-'+igId);
+  if(btn)btn.textContent='Testing…';
+  try{
+    // Test by fetching token via proxy — endpoint 'token' triggers only the token step
+    const clientId=ig.credentials?.clientId||'';
+    const clientSecret=ig.credentials?.clientSecret||'';
+    const resp=await fetch('/walmart-proxy',{
+      method:'POST',
+      headers:authHeaders(),
+      body:JSON.stringify({clientId,clientSecret,endpoint:'items?limit=1',method:'GET',params:{}})
+    });
+    if(resp.ok||resp.status===200){
+      ig.status='connected';
+      saveDB();
+      if(btn)btn.textContent='✓ Connected '+new Date().toLocaleTimeString();
+      showToast('✓ Walmart connection successful');
+    } else {
+      ig.status='error';
+      saveDB();
+      if(btn)btn.textContent='✗ Error '+resp.status;
+      showToast('✗ Walmart connection failed: '+resp.status);
+    }
+  }catch(e){
+    ig.status='error';
+    saveDB();
+    if(btn)btn.textContent='✗ Error';
+    showToast('✗ Walmart error: '+e.message);
+  }
+  renderIntegrations();
+}
+
+async function syncWalmartOrders(igId){
+  const ig=(db.integrations||[]).find(i=>i.id===igId);
+  if(!ig){showToast('Walmart integration not found');return;}
+  const btn=document.getElementById('pull-btn-'+igId);
+  const status=document.getElementById('push-status-'+igId);
+  if(btn){btn.disabled=true;btn.textContent='Syncing…';}
+  if(status)status.textContent='Fetching orders…';
+  addSyncLog('── Walmart order sync started ──');
+  if(!db.walmart)db.walmart={lastSync:{orders:null},pendingMappings:[],pendingOrders:[]};
+  try{
+    const lastSync=db.walmart.lastSync?.orders||null;
+    const now=new Date().toISOString();
+    const params={limit:200,'status':'Created,Acknowledged,Shipped,Delivered',lastModifiedEndDate:now};
+    if(lastSync)params.lastModifiedStartDate=lastSync;
+    const data=await walmartFetch('orders',{method:'GET',params});
+    const orders=(data?.list?.elements?.order)||[];
+    addSyncLog(`Fetched ${orders.length} orders from Walmart`);
+    const walmartCust=getOrCreateWalmartCustomer();
+    let added=0,updated=0,held=0;
+
+    orders.forEach(ord=>{
+      const poId=(ord.purchaseOrderId||'').replace(/^0+/,'');
+      const soNo='WAL-'+poId;
+      const unmappedSkus=[];
+      const resolvedItems=(ord.orderLines?.orderLine||[]).map(li=>{
+        const item=li.item||{};
+        const sku=(item.sku||'').trim();
+        const qty=parseInt(li.orderLineQuantity?.amount||1);
+        const unitPrice=parseFloat(li.charges?.charge?.find?.(c=>c.chargeType==='PRODUCT')?.chargeAmount?.amount||0);
+        const amount=unitPrice*qty;
+        const base={walmartSku:sku,shopifySku:'',itemName:item.itemDescription||sku,qty,rate:unitPrice,lineDiscount:0,discount:0,amount,isShipping:false};
+        if(!sku){unmappedSkus.push('[no-sku:walmart]');return{...base,itemId:null};}
+        // 1. Permanent skuMappings — case-insensitive
+        const _skuL=sku.toLowerCase();
+        const _permKey=Object.keys(db.skuMappings||{}).find(k=>k.toLowerCase()===_skuL);
+        const perm=_permKey?(db.skuMappings||{})[_permKey]:null;
+        if(perm){const list2=perm.src==='compositeItems'?(db.compositeItems||[]):db.items;const mi=list2.find(i=>i.id===perm.itemId);if(mi)return{...base,itemId:mi.id,itemSrc:perm.src,itemName:mi.name};}
+        // 2. pendingMappings — case-insensitive
+        const pmapping=(db.walmart.pendingMappings||[]).find(m=>(m.shopifySku||'').toLowerCase()===_skuL&&m.resolvedItemId);
+        if(pmapping){const mi=db.items.find(i=>i.id===pmapping.resolvedItemId)||(db.compositeItems||[]).find(i=>i.id===pmapping.resolvedItemId);if(mi)return{...base,itemId:mi.id,itemName:mi.name};}
+        // 3. Direct item.sku match
+        const _di=db.items.find(i=>(i.sku||'').toLowerCase()===_skuL);
+        const _dci=(db.compositeItems||[]).find(i=>(i.sku||'').toLowerCase()===_skuL);
+        const _d=_di||_dci;
+        if(_d){
+          const _dsrc=_dci&&!_di?'compositeItems':'items';
+          if(!db.skuMappings)db.skuMappings={};
+          if(!Object.keys(db.skuMappings).find(k=>k.toLowerCase()===_skuL)){db.skuMappings[sku]={itemId:_d.id,src:_dsrc};}
+          return{...base,itemId:_d.id,itemSrc:_dsrc,itemName:_d.name};
+        }
+        // 4. Unmapped — hold
+        unmappedSkus.push(sku);
+        if(!db.walmart.pendingMappings.find(m=>(m.shopifySku||'').toLowerCase()===_skuL)){
+          db.walmart.pendingMappings.push({shopifySku:sku,walmartSku:sku,shopifyVariantId:null,shopifyProductId:null,productTitle:item.itemDescription||sku,resolvedItemId:null});
+        }
+        return{...base,itemId:null,itemName:item.itemDescription||sku};
+      });
+
+      if(unmappedSkus.length>0){
+        const alreadyExists=db.salesOrders.find(s=>s.walmartOrderId===ord.purchaseOrderId);
+        if(!alreadyExists){
+          const alreadyHeld=(db.walmart.pendingOrders||[]).find(p=>p.walmartOrderId===ord.purchaseOrderId);
+          if(!alreadyHeld){db.walmart.pendingOrders.push({walmartOrderId:ord.purchaseOrderId,soNo,ordData:ord,unmappedSkus:[...new Set(unmappedSkus)]});held++;}
+        }
+        return;
+      }
+
+      const pa=ord.shippingInfo?.postalAddress||{};
+      const shipTo={
+        shipToName:pa.name||'',
+        shipToAddress:pa.address1||'',
+        shipToAddress2:pa.address2||'',
+        shipToCity:pa.city||'',
+        shipToState:pa.state||'',
+        shipToZip:pa.postalCode||'',
+        shipToCountry:pa.country||'US',
+        shipToPhone:ord.shippingInfo?.phone||''
+      };
+      const orderDate=(ord.orderDate||new Date().toISOString()).substring(0,10);
+      const payload={soNo,refNo:ord.purchaseOrderId||'',customerId:walmartCust.id,status:'Confirmed',invoiced:'Not Invoiced',payment:'Unpaid',packed:'Not Packed',shipped:'Not Shipped',amount:resolvedItems.reduce((s,l)=>s+l.amount,0),deliveryMethod:'Walmart',channel:'Walmart',warehouseId:1,date:orderDate,items:resolvedItems,walmartOrderId:ord.purchaseOrderId,...shipTo};
+      const existing=db.salesOrders.find(s=>s.walmartOrderId===ord.purchaseOrderId||s.soNo===soNo);
+      if(existing){Object.assign(existing,payload);updated++;}
+      else{db.salesOrders.push({id:db.nextId.salesOrders++,...payload});added++;}
+    });
+
+    db.walmart.lastSync.orders=now;
+    ig.lastSync=now;
+    ig.status='connected';
+    saveDB();
+    const msg=`✓ ${added} added, ${updated} updated${held?' · '+held+' held (unmapped SKUs)':''}`;
+    if(status)status.textContent=msg;
+    addSyncLog(`Walmart orders done — ${msg}`);
+    renderWalmartMappings();
+    if(currentView==='sales-orders')renderSalesOrders();
+    if(currentView==='dashboard')renderDashboard();
+    renderIntegrations();
+  }catch(e){
+    if(status)status.textContent='✗ '+e.message;
+    addSyncLog(`✗ Walmart sync failed: ${e.message}`);
+    showToast('✗ Walmart sync failed: '+e.message);
+    if(btn){btn.disabled=false;btn.textContent='↓ Sync Orders';}
+    return;
+  }
+  if(btn){btn.disabled=false;btn.textContent='↓ Sync Orders';}
+}
+
+function renderWalmartMappings(){
+  const wrap=document.getElementById('walmart-mappings-wrap');
+  if(!wrap)return;
+  if(!db.walmart)db.walmart={lastSync:{orders:null},pendingMappings:[],pendingOrders:[]};
+  if(!db.walmart.pendingMappings)db.walmart.pendingMappings=[];
+  const _rsmSkuMapKeys=Object.keys(db.skuMappings||{});
+  const _rsmSkuMapLower=new Set(_rsmSkuMapKeys.map(k=>k.toLowerCase()));
+
+  // Prune resolved SKUs from held orders
+  let _pruned=false;
+  (db.walmart.pendingOrders||[]).forEach(po=>{
+    const before=(po.unmappedSkus||[]).length;
+    po.unmappedSkus=(po.unmappedSkus||[]).filter(sku=>{
+      if(!sku)return true;
+      if(_rsmSkuMapLower.has(sku.toLowerCase()))return false;
+      const pm=(db.walmart.pendingMappings||[]).find(m=>(m.shopifySku||'').toLowerCase()===sku.toLowerCase());
+      if(pm&&pm.resolvedItemId)return false;
+      return true;
+    });
+    if(po.unmappedSkus.length!==before)_pruned=true;
+  });
+  if(_pruned)saveDB();
+
+  // Rebuild pendingMappings for still-unresolved SKUs
+  (db.walmart.pendingOrders||[]).forEach(po=>{
+    (po.unmappedSkus||[]).forEach(sku=>{
+      if(!sku)return;
+      const already=db.walmart.pendingMappings.find(m=>(m.shopifySku||'').toLowerCase()===sku.toLowerCase());
+      if(!already){
+        const li=(po.ordData&&po.ordData.orderLines?.orderLine||[]).find(l=>(l.item?.sku||'').trim().toLowerCase()===sku.toLowerCase());
+        db.walmart.pendingMappings.push({shopifySku:sku,walmartSku:sku,shopifyVariantId:null,shopifyProductId:null,productTitle:li?li.item?.itemDescription:sku,resolvedItemId:null});
+      } else if(!already.resolvedItemId){
+        const matchKey=_rsmSkuMapKeys.find(k=>k.toLowerCase()===sku.toLowerCase());
+        if(matchKey&&db.skuMappings[matchKey].itemId)already.resolvedItemId=db.skuMappings[matchKey].itemId;
+      }
+    });
+  });
+
+  const pending=(db.walmart.pendingMappings||[]).filter(m=>!m.resolvedItemId&&!_rsmSkuMapLower.has((m.shopifySku||'').toLowerCase()));
+  const heldCount=(db.walmart.pendingOrders||[]).filter(po=>(po.unmappedSkus||[]).length>0).length;
+  if(pending.length===0&&heldCount===0){wrap.style.display='none';return;}
+  wrap.style.display='';
+  let rows='';
+  pending.forEach((m,idx)=>{
+    const orderNos=(db.walmart.pendingOrders||[])
+      .filter(po=>(po.unmappedSkus||[]).includes(m.shopifySku))
+      .map(po=>po.soNo||('WAL-'+po.walmartOrderId));
+    const orderBadges=orderNos.length
+      ?orderNos.map(n=>`<span style="background:#e8f4fd;color:#0052a5;border:1px solid #90caf9;border-radius:4px;padding:1px 6px;font-size:10px;font-weight:600;white-space:nowrap">${n}</span>`).join(' ')
+      :'';
+    rows+=`<tr>
+      <td style="padding:9px 12px;border-bottom:1px solid var(--border);font-family:monospace;font-size:12px;color:var(--text);vertical-align:top;padding-top:12px">
+        ${m.shopifySku}
+        ${orderBadges?`<div style="margin-top:5px;display:flex;flex-wrap:wrap;gap:3px">${orderBadges}</div>`:''}
+      </td>
+      <td style="padding:9px 12px;border-bottom:1px solid var(--border);font-size:12px;color:var(--text-light);vertical-align:top;padding-top:14px">${m.productTitle||'—'}</td>
+      <td style="padding:9px 12px;border-bottom:1px solid var(--border);min-width:280px">
+        <input type="hidden" id="wal-map-sel-${idx}" value=""/>
+        <input type="hidden" id="wal-map-src-${idx}" value=""/>
+        <div style="position:relative;margin-bottom:6px">
+          <input type="text" id="wal-map-search-${idx}" placeholder="Search by item name…"
+            oninput="filterWalmartMappingItems(${idx})"
+            onblur="setTimeout(()=>{const d=document.getElementById('wal-map-dd-${idx}');if(d)d.style.display='none';},200)"
+            style="font-size:12px;border:1px solid var(--border);border-radius:4px;padding:5px 8px;width:100%;outline:none"/>
+          <div id="wal-map-dd-${idx}" style="display:none;position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid var(--border);border-radius:4px;max-height:160px;overflow-y:auto;z-index:200;box-shadow:0 4px 12px rgba(0,0,0,.12)"></div>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <input type="text" id="wal-map-sku-${idx}" placeholder="Or enter item SKU…"
+            style="font-size:12px;border:1px solid var(--border);border-radius:4px;padding:5px 8px;flex:1;outline:none"/>
+          <button class="btn btn-outline btn-sm" onclick="walmartMapBySkuLookup(${idx})" style="white-space:nowrap">Find by SKU</button>
+        </div>
+        <div id="wal-map-chosen-${idx}" style="font-size:12px;color:#fff;background:var(--success);margin-top:6px;min-height:0;font-weight:600;padding:0;border-radius:4px;display:none"></div>
+      </td>
+      <td style="padding:9px 12px;border-bottom:1px solid var(--border);vertical-align:top;padding-top:14px">
+        <button class="btn btn-primary btn-sm" style="background:#0071dc;border-color:#0052a5" onclick="saveWalmartMapping(${idx})">Save</button>
+        <button class="btn btn-outline btn-sm" style="margin-top:6px;color:#6b7280;border-color:#d1d5db;font-size:11px;display:block;width:100%" onclick="dismissWalmartMapping('${m.shopifySku.replace(/'/g,"\\'")}')}" title="Remove from list">✕ Remove</button>
+      </td>
+    </tr>`;
+  });
+  document.getElementById('walmart-mappings-body').innerHTML=`
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <div style="font-size:13px;font-weight:600;color:var(--danger)">⚠ ${pending.length} unresolved SKU${pending.length!==1?'s':''}</div>
+      ${heldCount?`<div style="font-size:12px;color:#0071dc;font-weight:600">📦 ${heldCount} order${heldCount!==1?'s':''} on hold</div>`:''}
+    </div>
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr style="background:#e8f4fd">
+        <th style="padding:8px 12px;text-align:left;font-size:11px;color:#0052a5;font-weight:700;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border)">Walmart SKU</th>
+        <th style="padding:8px 12px;text-align:left;font-size:11px;color:#0052a5;font-weight:700;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border)">Product</th>
+        <th style="padding:8px 12px;text-align:left;font-size:11px;color:#0052a5;font-weight:700;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border)">Map to Item</th>
+        <th style="border-bottom:1px solid var(--border)"></th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    ${heldCount?`<div style="margin-top:12px;padding:10px 14px;background:#e8f4fd;border:1px solid #90caf9;border-radius:6px;font-size:12px;line-height:1.6;display:flex;align-items:center;justify-content:space-between">
+      <span><strong>📦 ${heldCount} order${heldCount!==1?'s are':' is'} on hold.</strong> ${pending.length>0?'Map all SKUs above, then click Release.':'All SKUs mapped — ready to release.'}</span>
+      ${pending.length===0?`<button class="btn btn-primary btn-sm" style="margin-left:16px;white-space:nowrap;background:#0071dc;border-color:#0052a5" onclick="retryWalmartPendingOrders().then(()=>{renderWalmartMappings();renderCurrentView();})">⚡ Release Orders</button>`:''}
+    </div>`:''}`;
+}
+
+function filterWalmartMappingItems(idx){
+  const q=(document.getElementById('wal-map-search-'+idx).value||'').toLowerCase().trim();
+  const dd=document.getElementById('wal-map-dd-'+idx);
+  if(!q){dd.style.display='none';return;}
+  const allItems=[...db.items.map(i=>({...i,_src:'items'})),...(db.compositeItems||[]).map(i=>({...i,_src:'compositeItems'}))];
+  const matches=allItems.filter(i=>i.name.toLowerCase().includes(q)||(i.sku&&i.sku.toLowerCase().includes(q))).slice(0,25);
+  if(!matches.length){
+    dd.innerHTML='<div style="padding:8px 12px;font-size:12px;color:var(--text-light)">No items found</div>';
+  } else {
+    dd.innerHTML=matches.map(i=>`<div
+      onmousedown="selectWalmartMappingItem(${idx},${i.id},'${i.name.replace(/'/g,"\\'").replace(/"/g,"&quot;")}','${(i.sku||'').replace(/'/g,"\\'").replace(/"/g,'&quot;')}','${i._src}')"
+      style="padding:8px 12px;font-size:12px;cursor:pointer;border-bottom:1px solid #f3f4f6;display:flex;justify-content:space-between;align-items:center"
+      onmouseover="this.style.background='#e8f4fd'" onmouseout="this.style.background=''">
+      <span>${i.name}</span>
+      ${i.sku?`<span style="font-family:monospace;font-size:11px;color:var(--text-light);background:#f3f4f6;padding:1px 6px;border-radius:3px">${i.sku}</span>`:''}
+    </div>`).join('');
+  }
+  dd.style.display='';
+}
+
+function selectWalmartMappingItem(idx,itemId,name,sku,src){
+  document.getElementById('wal-map-sel-'+idx).value=itemId;
+  const srcEl=document.getElementById('wal-map-src-'+idx);if(srcEl)srcEl.value=src||'items';
+  document.getElementById('wal-map-search-'+idx).value=name+(sku?' ('+sku+')':'');
+  const dd=document.getElementById('wal-map-dd-'+idx);if(dd)dd.style.display='none';
+  const chosen=document.getElementById('wal-map-chosen-'+idx);
+  if(chosen){chosen.textContent='✓ Matched: '+name+(sku?' · SKU: '+sku:'');chosen.style.display='block';chosen.style.padding='5px 10px';}
+}
+
+function walmartMapBySkuLookup(idx){
+  const sku=(document.getElementById('wal-map-sku-'+idx).value||'').trim();
+  if(!sku){showToast('Enter a SKU to search.');return;}
+  let item=db.items.find(i=>i.sku&&i.sku.toLowerCase()===sku.toLowerCase());
+  let src='items';
+  if(!item){item=(db.compositeItems||[]).find(i=>i.sku&&i.sku.toLowerCase()===sku.toLowerCase());src='compositeItems';}
+  if(!item){showToast('SKU "'+sku+'" not found.');return;}
+  selectWalmartMappingItem(idx,item.id,item.name,item.sku,src);
+  document.getElementById('wal-map-sku-'+idx).value='';
+}
+
+function saveWalmartMapping(idx){
+  if(!db.walmart)db.walmart={lastSync:{orders:null},pendingMappings:[],pendingOrders:[]};
+  const _skuMapLower=new Set(Object.keys(db.skuMappings||{}).map(k=>k.toLowerCase()));
+  const pending=(db.walmart.pendingMappings||[]).filter(m=>!m.resolvedItemId&&!_skuMapLower.has((m.shopifySku||'').toLowerCase()));
+  const mapping=pending[idx];
+  if(!mapping)return;
+  const sel=document.getElementById('wal-map-sel-'+idx);
+  if(!sel||!sel.value){showToast('⚠️ Search for an item and click it from the dropdown first.');return;}
+  const itemId=parseInt(sel.value);
+  if(isNaN(itemId)||itemId<=0){showToast('⚠️ Please select an item from the list before saving.');return;}
+  const srcEl=document.getElementById('wal-map-src-'+idx);
+  const src=(srcEl&&srcEl.value)||'items';
+  const _skuL=(mapping.shopifySku||'').toLowerCase();
+  const dbEntry=db.walmart.pendingMappings.find(m=>(m.shopifySku||'').toLowerCase()===_skuL);
+  if(dbEntry)dbEntry.resolvedItemId=itemId;
+  // Save to permanent skuMappings
+  if(!db.skuMappings)db.skuMappings={};
+  Object.keys(db.skuMappings).forEach(k=>{const m=db.skuMappings[k];if(String(m.itemId)===String(itemId)&&m.src===src)delete db.skuMappings[k];});
+  db.skuMappings[mapping.shopifySku]={itemId,src};
+  const _saved=mapping.shopifySku;
+  db.walmart.pendingMappings=db.walmart.pendingMappings.filter(m=>{
+    if((m.shopifySku||'').toLowerCase()!==_skuL)return true;
+    if(!m.resolvedItemId)return false;
+    return String(m.resolvedItemId)===String(itemId);
+  });
+  if(!db.walmart.pendingMappings.find(m=>m.shopifySku===_saved&&String(m.resolvedItemId)===String(itemId))){
+    db.walmart.pendingMappings.push({shopifySku:_saved,walmartSku:_saved,resolvedItemId:itemId,shopifyVariantId:null,shopifyProductId:null,productTitle:dbEntry?.productTitle||''});
+  }
+  const list2=src==='compositeItems'?(db.compositeItems||[]):db.items;
+  const item=list2.find(i=>i.id===itemId);
+  addSyncLog(`✓ Mapped Walmart SKU "${mapping.shopifySku}" → "${item?item.name:'item #'+itemId}"`);
+  saveDBNow().then(ok=>{
+    if(!ok)_showSessionExpiredBanner();
+    retryWalmartPendingOrders().then(()=>{
+      renderWalmartMappings();
+      renderCurrentView();
+      showToast(ok?`✓ "${mapping.shopifySku}" → ${item?'"'+item.name+'"':'item #'+itemId}`:`⚠️ Mapped locally but failed to reach server`,ok?4000:6000);
+    });
+  });
+}
+
+function dismissWalmartMapping(sku){
+  if(!db.walmart)return;
+  const skuL=(sku||'').toLowerCase();
+  db.walmart.pendingMappings=(db.walmart.pendingMappings||[]).filter(m=>(m.shopifySku||'').toLowerCase()!==skuL);
+  db.walmart.pendingOrders=(db.walmart.pendingOrders||[]).filter(po=>{
+    const remaining=(po.unmappedSkus||[]).filter(s=>s.toLowerCase()!==skuL);
+    if(remaining.length===0)return false;
+    po.unmappedSkus=remaining;
+    return true;
+  });
+  saveDB();
+  renderWalmartMappings();
+  showToast(`Removed "${sku}" — it will re-import on next sync`);
+}
+
+async function retryWalmartPendingOrders(){
+  if(!db.walmart||(db.walmart.pendingOrders||[]).length===0)return;
+  const walmartCust=getOrCreateWalmartCustomer();
+  const released=[];
+  for(const po of db.walmart.pendingOrders){
+    const stillUnmapped=(po.unmappedSkus||[]).filter(sku=>{
+      const permKey=Object.keys(db.skuMappings||{}).find(k=>k.toLowerCase()===sku.toLowerCase());
+      if(permKey&&db.skuMappings[permKey].itemId!=null)return false;
+      return!(db.walmart.pendingMappings||[]).find(m=>(m.shopifySku||'').toLowerCase()===sku.toLowerCase()&&m.resolvedItemId);
+    });
+    if(stillUnmapped.length>0)continue;
+    const ord=po.ordData;
+    const resolvedItems=(ord.orderLines?.orderLine||[]).map(li=>{
+      const item=li.item||{};
+      const sku=(item.sku||'').trim();
+      const qty=parseInt(li.orderLineQuantity?.amount||1);
+      const unitPrice=parseFloat(li.charges?.charge?.find?.(c=>c.chargeType==='PRODUCT')?.chargeAmount?.amount||0);
+      const amount=unitPrice*qty;
+      const base={walmartSku:sku,shopifySku:'',itemName:item.itemDescription||sku,qty,rate:unitPrice,lineDiscount:0,discount:0,amount,isShipping:false};
+      if(!sku)return{...base,itemId:null};
+      const _skuL=sku.toLowerCase();
+      const _permKey=Object.keys(db.skuMappings||{}).find(k=>k.toLowerCase()===_skuL);
+      const perm=_permKey?(db.skuMappings||{})[_permKey]:null;
+      if(perm){const list2=perm.src==='compositeItems'?(db.compositeItems||[]):db.items;const mi=list2.find(i=>i.id===perm.itemId);if(mi)return{...base,itemId:mi.id,itemSrc:perm.src,itemName:mi.name};}
+      const pmapping=(db.walmart.pendingMappings||[]).find(m=>(m.shopifySku||'').toLowerCase()===_skuL&&m.resolvedItemId);
+      if(pmapping){const mi=db.items.find(i=>i.id===pmapping.resolvedItemId)||(db.compositeItems||[]).find(i=>i.id===pmapping.resolvedItemId);if(mi)return{...base,itemId:mi.id,itemName:mi.name};}
+      return{...base,itemId:null};
+    });
+    const pa=ord.shippingInfo?.postalAddress||{};
+    const shipTo={shipToName:pa.name||'',shipToAddress:pa.address1||'',shipToAddress2:pa.address2||'',shipToCity:pa.city||'',shipToState:pa.state||'',shipToZip:pa.postalCode||'',shipToCountry:pa.country||'US',shipToPhone:ord.shippingInfo?.phone||''};
+    const orderDate=(ord.orderDate||new Date().toISOString()).substring(0,10);
+    const poId=(ord.purchaseOrderId||'').replace(/^0+/,'');
+    const soNo='WAL-'+poId;
+    const payload={soNo,refNo:ord.purchaseOrderId||'',customerId:walmartCust.id,status:'Confirmed',invoiced:'Not Invoiced',payment:'Unpaid',packed:'Not Packed',shipped:'Not Shipped',amount:resolvedItems.reduce((s,l)=>s+l.amount,0),deliveryMethod:'Walmart',channel:'Walmart',warehouseId:1,date:orderDate,items:resolvedItems,walmartOrderId:ord.purchaseOrderId,...shipTo};
+    const existing=db.salesOrders.find(s=>s.walmartOrderId===ord.purchaseOrderId||s.soNo===soNo);
+    if(existing){Object.assign(existing,payload);}
+    else{db.salesOrders.push({id:db.nextId.salesOrders++,...payload});}
+    released.push(po.walmartOrderId);
+  }
+  db.walmart.pendingOrders=(db.walmart.pendingOrders||[]).filter(po=>!released.includes(po.walmartOrderId));
+  if(released.length){saveDB();addSyncLog(`✓ Released ${released.length} held Walmart order(s)`);}
 }
 
 // Build a Sales Order payload from a raw Amazon order object.

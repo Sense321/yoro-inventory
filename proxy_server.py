@@ -11,7 +11,7 @@ SHOPIFY_TOKEN         = os.environ.get('SHOPIFY_TOKEN',         '')   # fallback
 SHOPIFY_CLIENT_ID     = os.environ.get('SHOPIFY_CLIENT_ID',     '')
 SHOPIFY_CLIENT_SECRET = os.environ.get('SHOPIFY_CLIENT_SECRET', '')
 SHOPIFY_SCOPES        = 'read_products,write_products,read_orders,write_orders,read_customers,write_customers,read_fulfillments,write_fulfillments,write_merchant_managed_fulfillment_orders'
-SHOPIFY_VER           = '2024-01'
+SHOPIFY_VER           = '2025-04'
 APP_URL               = os.environ.get('APP_URL', 'https://yoro-inventory-production.up.railway.app')
 PORT                  = int(os.environ.get('PORT', 8765))
 SECRET_KEY            = os.environ.get('SECRET_KEY', 'hhp-change-this-in-production-2026')
@@ -228,10 +228,98 @@ def load_db():
     with open(DB_FILE, 'r') as f:
         return json.load(f)
 
+_db_lock = threading.Lock()
+BACKUP_DIR  = os.path.join(DATA_DIR, 'backups')
+DAILY_DIR   = os.path.join(DATA_DIR, 'backups', 'daily')
+MAX_HOURLY  = 48   # ~2 days of hourly snapshots
+MAX_DAILY   = 7    # 7 midnight snapshots (one week)
+
+def _rotate_backups():
+    """Keep only the most recent MAX_HOURLY hourly files."""
+    try:
+        files = sorted(
+            [f for f in os.listdir(BACKUP_DIR) if f.startswith('hhp_db_')],
+            reverse=True
+        )
+        for old in files[MAX_HOURLY:]:
+            try:
+                os.remove(os.path.join(BACKUP_DIR, old))
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+def _rotate_daily_backups():
+    """Keep only the most recent MAX_DAILY daily files, delete the oldest."""
+    try:
+        files = sorted(
+            [f for f in os.listdir(DAILY_DIR) if f.startswith('daily_')],
+            reverse=True
+        )
+        for old in files[MAX_DAILY:]:
+            try:
+                os.remove(os.path.join(DAILY_DIR, old))
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+def _midnight_backup():
+    """Write a full daily backup, keep 7 copies, delete the oldest."""
+    import shutil
+    os.makedirs(DAILY_DIR, exist_ok=True)
+    ts  = datetime.datetime.utcnow().strftime('%Y-%m-%d')
+    dst = os.path.join(DAILY_DIR, f'daily_{ts}.json')
+    try:
+        with _db_lock:
+            shutil.copy2(DB_FILE, dst)
+        _rotate_daily_backups()
+        print(f'[backup] Daily backup written: {dst}', flush=True)
+    except Exception as e:
+        print(f'[backup] Daily backup failed: {e}', flush=True)
+
+def _daily_backup_scheduler():
+    """Wake at midnight UTC every day and write a daily backup."""
+    while True:
+        try:
+            now = datetime.datetime.utcnow()
+            # Seconds until next midnight UTC
+            tomorrow = (now + datetime.timedelta(days=1)).replace(
+                hour=0, minute=0, second=0, microsecond=0)
+            sleep_secs = (tomorrow - now).total_seconds()
+            time.sleep(sleep_secs)
+            _midnight_backup()
+        except Exception as e:
+            print(f'[backup] Scheduler error: {e}', flush=True)
+            time.sleep(60)  # retry after a minute on error
+
 def save_db(data):
-    os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
-    with open(DB_FILE, 'w') as f:
-        json.dump(data, f)
+    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    with _db_lock:
+        # Stamp with a monotonically increasing version so stale clients can be rejected
+        try:
+            with open(DB_FILE, 'r') as f:
+                current = json.load(f)
+        except Exception:
+            current = {}
+        new_v = (current.get('_v') or 0) + 1
+        data['_v'] = new_v
+        # Write atomically: write to temp file then rename
+        tmp = DB_FILE + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(data, f)
+        os.replace(tmp, DB_FILE)
+        # Hourly backup: only write a new backup file once per hour
+        ts = datetime.datetime.utcnow().strftime('%Y%m%d_%H')
+        backup_file = os.path.join(BACKUP_DIR, f'hhp_db_{ts}.json')
+        if not os.path.exists(backup_file):
+            try:
+                import shutil
+                shutil.copy2(DB_FILE, backup_file)
+                _rotate_backups()
+            except Exception:
+                pass
 
 # ── JSON response helper ───────────────────────────────────────────────────────
 def json_response(handler, code, data, extra_headers=None):
@@ -462,6 +550,67 @@ class Handler(http.server.BaseHTTPRequestHandler):
             json_response(self, 200, load_db())
             return
 
+        # ── Backup list (admin only) ───────────────────────────────────────
+        if p == '/admin/backups':
+            user = self._require_auth()
+            if not user: return
+            if user.get('role') != 'admin':
+                json_response(self, 403, {'error': 'Admin only'}); return
+            try:
+                # Daily backups
+                daily = []
+                if os.path.isdir(DAILY_DIR):
+                    for fname in sorted([f for f in os.listdir(DAILY_DIR) if f.startswith('daily_')], reverse=True):
+                        fpath = os.path.join(DAILY_DIR, fname)
+                        stat = os.stat(fpath)
+                        ts_str = fname.replace('daily_','').replace('.json','')
+                        try:
+                            dt = datetime.datetime.strptime(ts_str, '%Y-%m-%d')
+                            label = dt.strftime('%A, %b %d %Y') + ' (midnight UTC)'
+                        except Exception:
+                            label = ts_str
+                        daily.append({'file': fname, 'label': label, 'size': stat.st_size, 'kind': 'daily'})
+                # Hourly backups
+                hourly = []
+                if os.path.isdir(BACKUP_DIR):
+                    for fname in sorted([f for f in os.listdir(BACKUP_DIR) if f.startswith('hhp_db_')], reverse=True):
+                        fpath = os.path.join(BACKUP_DIR, fname)
+                        stat = os.stat(fpath)
+                        ts_str = fname.replace('hhp_db_','').replace('.json','')
+                        try:
+                            dt = datetime.datetime.strptime(ts_str, '%Y%m%d_%H')
+                            label = dt.strftime('%b %d, %Y %I:00 %p UTC')
+                        except Exception:
+                            label = ts_str
+                        hourly.append({'file': fname, 'label': label, 'size': stat.st_size, 'kind': 'hourly'})
+                json_response(self, 200, {'daily': daily, 'hourly': hourly})
+            except Exception as e:
+                json_response(self, 200, {'daily': [], 'hourly': [], 'error': str(e)})
+            return
+
+        # ── Restore a backup (admin only) ─────────────────────────────────
+        if p.startswith('/admin/restore/'):
+            user = self._require_auth()
+            if not user: return
+            if user.get('role') != 'admin':
+                json_response(self, 403, {'error': 'Admin only'}); return
+            fname = os.path.basename(p.replace('/admin/restore/', ''))
+            # Check both backup dirs
+            fpath = os.path.join(DAILY_DIR, fname)
+            if not os.path.isfile(fpath):
+                fpath = os.path.join(BACKUP_DIR, fname)
+            if not os.path.isfile(fpath):
+                json_response(self, 404, {'error': 'Backup not found'}); return
+            try:
+                with open(fpath, 'r') as f:
+                    backup_data = json.load(f)
+                backup_data.pop('_v', None)  # let save_db assign new version
+                save_db(backup_data)
+                json_response(self, 200, {'ok': True, 'restored': fname, '_v': backup_data.get('_v')})
+            except Exception as e:
+                json_response(self, 500, {'error': str(e)})
+            return
+
         # ── Users list (admin only) ────────────────────────────────────────
         if p == '/users':
             user = self._require_auth()
@@ -662,8 +811,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not user: return
             try:
                 data = json.loads(body)
+                # Reject stale saves: if client's _v is behind the server's _v, refuse
+                current = load_db()
+                server_v = current.get('_v') or 0
+                client_v = data.get('_v') or 0
+                if server_v > 0 and client_v < server_v:
+                    json_response(self, 409, {'ok': False, 'stale': True,
+                        'error': f'Stale data (client v{client_v} < server v{server_v}). Reload first.'})
+                    return
                 save_db(data)
-                json_response(self, 200, {'ok': True})
+                json_response(self, 200, {'ok': True, '_v': data.get('_v')})
             except Exception as e:
                 json_response(self, 500, {'ok': False, 'error': str(e)})
             return
@@ -697,6 +854,67 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     headers={'Authorization': f'Basic {credentials}',
                              'Content-Type': 'application/json'}, method=method)
                 with urllib.request.urlopen(req, timeout=20) as r:
+                    resp_body = r.read()
+                    self.send_response(r.status)
+                    self.send_header('Content-Type', 'application/json')
+                    self.send_cors()
+                    self.end_headers()
+                    self.wfile.write(resp_body)
+            except urllib.error.HTTPError as e:
+                resp_body = e.read()
+                self.send_response(e.code)
+                self.send_header('Content-Type', 'application/json')
+                self.send_cors()
+                self.end_headers()
+                self.wfile.write(resp_body)
+            except Exception as e:
+                json_response(self, 500, {'error': str(e)})
+            return
+
+        # ── Walmart Marketplace proxy ──────────────────────────────────────
+        if p == '/walmart-proxy':
+            user = self._require_auth()
+            if not user: return
+            try:
+                import uuid as _uuid
+                payload     = json.loads(body)
+                client_id   = payload.get('clientId', '')
+                client_secret = payload.get('clientSecret', '')
+                endpoint    = payload.get('endpoint', '')
+                method      = payload.get('method', 'GET').upper()
+                params      = payload.get('params', {})
+                corr_id     = str(_uuid.uuid4())
+
+                # Step 1: fetch OAuth token
+                credentials = base64.b64encode(f'{client_id}:{client_secret}'.encode()).decode()
+                token_url   = 'https://marketplace.walmartapis.com/v3/token'
+                token_body  = b'grant_type=client_credentials'
+                token_req   = urllib.request.Request(token_url, data=token_body,
+                    headers={
+                        'Authorization': f'Basic {credentials}',
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'Accept': 'application/json',
+                        'WM_SVC.NAME': 'Walmart Marketplace',
+                        'WM_QOS.CORRELATION_ID': corr_id,
+                    }, method='POST')
+                with urllib.request.urlopen(token_req, timeout=20) as tr:
+                    token_data = json.loads(tr.read())
+                access_token = token_data.get('access_token', '')
+
+                # Step 2: make the API call
+                api_url = f'https://marketplace.walmartapis.com/v3/{endpoint.lstrip("/")}'
+                if params:
+                    qs = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
+                    if qs:
+                        api_url += ('&' if '?' in api_url else '?') + qs
+                api_req = urllib.request.Request(api_url,
+                    headers={
+                        'Authorization': f'Bearer {access_token}',
+                        'Accept': 'application/json',
+                        'WM_SVC.NAME': 'Walmart Marketplace',
+                        'WM_QOS.CORRELATION_ID': str(_uuid.uuid4()),
+                    }, method=method)
+                with urllib.request.urlopen(api_req, timeout=20) as r:
                     resp_body = r.read()
                     self.send_response(r.status)
                     self.send_header('Content-Type', 'application/json')
@@ -1241,7 +1459,16 @@ if __name__ == '__main__':
     t = threading.Thread(target=_digest_scheduler, daemon=True)
     t.start()
 
-    http.server.HTTPServer.allow_reuse_address = True
-    server = http.server.HTTPServer(('', PORT), Handler)
+    # Daily midnight backup thread
+    tb = threading.Thread(target=_daily_backup_scheduler, daemon=True)
+    tb.start()
+    # Run one immediately on startup so there's always at least one daily backup
+    threading.Thread(target=_midnight_backup, daemon=True).start()
+
+    import socketserver
+    class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+        daemon_threads = True  # don't block shutdown on open connections
+        allow_reuse_address = True
+    server = ThreadedHTTPServer(('', PORT), Handler)
     print(f'Yoro Inventory PRO running at http://localhost:{PORT}', flush=True)
     server.serve_forever()
