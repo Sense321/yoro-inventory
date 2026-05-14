@@ -3089,6 +3089,23 @@ function loadDB(){
   if(!db.mappingHidden)db.mappingHidden={};
   // Remove any corrupted skuMappings entries (null/NaN itemId from a prior bug where NaN was stored)
   Object.keys(db.skuMappings).forEach(k=>{const m=db.skuMappings[k];if(!m||m.itemId==null||!(m.itemId===m.itemId))delete db.skuMappings[k];});
+  // ── CRITICAL: purge skuMappings entries that point to assembly/packaging components ──
+  // These are Zoho internal items (name "200: ...", "300: ...", salePrice=0) that must never
+  // appear on sales orders. If a stale mapping points to one, delete it so the direct SKU
+  // match can re-resolve to the correct saleable item.
+  let _asmPurged=0;
+  Object.keys(db.skuMappings||{}).forEach(k=>{
+    const m=db.skuMappings[k];
+    if(!m)return;
+    const list=(m.src==='compositeItems'?(db.compositeItems||[]):db.items)||[];
+    const item=list.find(i=>String(i.id)===String(m.itemId));
+    if(!item){delete db.skuMappings[k];_asmPurged++;return;} // item deleted
+    // Re-check: if item's OWN sku exactly matches this key (same case-insensitive), it's a valid direct binding
+    if((item.sku||'').toLowerCase()===k.toLowerCase())return; // direct binding — keep even if name starts with digit
+    // Otherwise if it's an assembly component, purge the mapping so it re-resolves
+    if(isAssemblyComponent(item)){delete db.skuMappings[k];_asmPurged++;}
+  });
+  if(_asmPurged>0)console.log(`[init] Purged ${_asmPurged} skuMappings entries pointing to assembly/packaging components`);
   // Also fix any pendingMappings entries with null resolvedItemId that were corrupted the same way
   (db.shopify.pendingMappings||[]).forEach(m=>{if(m.resolvedItemId!=null&&!(m.resolvedItemId===m.resolvedItemId))m.resolvedItemId=null;});
   // Migrate confirmed pendingMappings into permanent skuMappings — only when unambiguous.
@@ -3096,8 +3113,11 @@ function loadDB(){
   const _pmExistingSkuLower=new Set(Object.keys(db.skuMappings||{}).map(k=>k.toLowerCase()));
   (db.shopify.pendingMappings||[]).filter(m=>m.resolvedItemId&&m.shopifySku).forEach(m=>{
     if(_pmExistingSkuLower.has((m.shopifySku||'').toLowerCase()))return; // case-insensitive guard — never overwrite a user-saved mapping
-    const inItems=(db.items||[]).some(i=>String(i.id)===String(m.resolvedItemId));
-    const inComposites=(db.compositeItems||[]).some(i=>String(i.id)===String(m.resolvedItemId));
+    const inItems=(db.items||[]).find(i=>String(i.id)===String(m.resolvedItemId));
+    const inComposites=(db.compositeItems||[]).find(i=>String(i.id)===String(m.resolvedItemId));
+    // Never migrate a mapping that points to an assembly/packaging component
+    if(inItems&&isAssemblyComponent(inItems))return;
+    if(inComposites&&isAssemblyComponent(inComposites))return;
     if(inComposites&&!inItems){db.skuMappings[m.shopifySku]={itemId:m.resolvedItemId,src:'compositeItems'};_pmExistingSkuLower.add(m.shopifySku.toLowerCase());}
     else if(inItems&&!inComposites){db.skuMappings[m.shopifySku]={itemId:m.resolvedItemId,src:'items'};_pmExistingSkuLower.add(m.shopifySku.toLowerCase());}
     // If ID exists in both collections (collision), skip — can't determine src safely
@@ -3263,6 +3283,16 @@ function loadDB(){
   // Migrate: virtual kit flag
   (db.items||[]).forEach(it=>{if(it.isVirtualKit===undefined)it.isVirtualKit=false;if(!it.kitComponents)it.kitComponents=[];});
   (db.compositeItems||[]).forEach(ci=>{if(ci.isVirtualKit===undefined)ci.isVirtualKit=false;if(!ci.kitComponents)ci.kitComponents=[];});
+
+  // ── Brand migration: all items without a brand belong to Hey Honey ────────────
+  // All inventory was Hey Honey-only at launch. Any item missing a brand gets stamped
+  // "Hey Honey" so brand-restricted users can see their items correctly.
+  let _brandStamped=0;
+  [...(db.items||[]),...(db.compositeItems||[])].forEach(i=>{
+    if(!i.brand){i.brand='Hey Honey';_brandStamped++;}
+  });
+  if(_brandStamped>0){console.log(`[init] Stamped ${_brandStamped} unbranded items → "Hey Honey"`);_dbDirty=true;}
+
   // Migrate: brands — string[] → object[]
   const _mkBrandObj=name=>({name,logo:'',primaryColor:'#e05a00',accentColor:'#b84800',warehouseAddress:{line1:'',line2:'',city:'',state:'',zip:'',country:''},accountingAddress:{line1:'',line2:'',city:'',state:'',zip:'',country:''},email:'',replyTo:'',phone:'',website:'',useAccountingForWarehouse:false});
   if(!db.brands){
@@ -3271,6 +3301,17 @@ function loadDB(){
   } else if(db.brands.length>0&&typeof db.brands[0]==='string'){
     db.brands=db.brands.map(_mkBrandObj);
   }
+  // Always ensure Hey Honey and AristoSpice exist in db.brands — even before any Aristo items
+  ['Hey Honey','AristoSpice'].forEach(bn=>{
+    if(!(db.brands||[]).find(b=>b.name===bn)){
+      if(!db.brands)db.brands=[];
+      const defaults={
+        'Hey Honey':{primaryColor:'#e05a00',accentColor:'#b84800'},
+        'AristoSpice':{primaryColor:'#16a34a',accentColor:'#15803d'}
+      };
+      db.brands.push({..._mkBrandObj(bn),...(defaults[bn]||{})});
+    }
+  });
   (db.brands||[]).forEach(b=>{
     if(!b.warehouseAddress)b.warehouseAddress={line1:'',line2:'',city:'',state:'',zip:'',country:''};
     if(!b.accountingAddress)b.accountingAddress={line1:'',line2:'',city:'',state:'',zip:'',country:''};
@@ -4194,8 +4235,8 @@ function renderItems(){
   if(search)filtered=filtered.filter(i=>i.name.toLowerCase().includes(search)||(i.sku||'').toLowerCase().includes(search));
   if(cat)filtered=filtered.filter(i=>i.category===cat);
   const _activeBrandFilter=_activeBrand||brandFilter;
-  // Show items that match the brand OR have no brand assigned (unbranded items belong to every workspace)
-  if(_activeBrandFilter)filtered=filtered.filter(i=>!i.brand||_brandEq(i.brand,_activeBrandFilter));
+  // Unbranded items are treated as "Hey Honey" — they don't bleed into other brand workspaces
+  if(_activeBrandFilter)filtered=filtered.filter(i=>_brandEq(i.brand||'Hey Honey',_activeBrandFilter));
   if(status)filtered=filtered.filter(i=>i.status===status);
   if(whFilter){const whId=parseInt(whFilter);filtered=filtered.filter(i=>((i.warehouseStock||{})[whId]||0)>0);}
   const cats=new Set(db.items.map(i=>i.category));
@@ -4721,7 +4762,7 @@ function renderCompositeItems(){
   let data=(db.compositeItems||[]).filter(ci=>ci.itemType!=='Kit Item'&&!ci.isVirtualKit).filter(itemAllowedForUser);
   if(search)data=data.filter(ci=>ci.name.toLowerCase().includes(search)||(ci.sku||'').toLowerCase().includes(search)||(ci.itemType||'').toLowerCase().includes(search));
   const _ciBrandF=_activeBrand||brandFilter;
-  if(_ciBrandF)data=data.filter(ci=>!ci.brand||_brandEq(ci.brand,_ciBrandF));
+  if(_ciBrandF)data=data.filter(ci=>_brandEq(ci.brand||'Hey Honey',_ciBrandF));
   if(whFilter){const whId=parseInt(whFilter);data=data.filter(ci=>((ci.warehouseStock||{})[whId]||0)>0);}
   // Refresh filter dropdowns
   const brands=new Set([...(db.items||[]),...(db.compositeItems||[])].map(i=>i.brand).filter(Boolean));
@@ -5371,6 +5412,22 @@ function setActiveBrand(name){
   else localStorage.removeItem('hhp_active_brand');
   _populateBrandSwitcher();
   renderCurrentView();
+}
+
+// ── Assembly-component guard ──────────────────────────────────────────────────
+// Zoho imports packaging/manufacturing components with names like:
+//   "200: Take Away The Drama TUBE 35/110mm 60ml"  (salePrice=0, SKU=TUB072T60)
+//   "300: BOX Relax! 70ml"                          (salePrice=0, SKU=BOX144T70)
+//   "600: Boost It Up"                              (salePrice=0, SKU=A081A50)
+// These MUST NOT appear on sales orders or be used in SKU auto-resolution.
+function isAssemblyComponent(item){
+  if(!item)return false;
+  // Pattern: name starts with 1-4 digits followed by colon (e.g. "200:", "300:", "600:")
+  if(/^\d{1,4}:/.test((item.name||'').trim())){return true;}
+  // Also flag items whose SKU starts with packaging prefixes used in Zoho
+  const sku=(item.sku||'').toUpperCase();
+  if(/^(TUB|BOX|JAR|A\d{3}|BO\d{3}|B\d{3}|TU\d{3}|AIR|NOBO|NO\d{3}|PO)[A-Z0-9]/.test(sku)&&(item.salePrice===0||item.salePrice==null)){return true;}
+  return false;
 }
 
 // ── Brand determination helpers ──
@@ -9388,7 +9445,8 @@ function fpItemSearch(prefix,idx,forPurchase){
   if(!inp||!dd)return;
   const q=(inp.value||'').toLowerCase().trim();
   const allSellable=[...(db.items||[]).map(i=>({...i,_src:'items'})),...(db.compositeItems||[]).map(i=>({...i,_src:'compositeItems'}))];
-  const pool=forPurchase?(db.items||[]).map(i=>({...i,_src:'items'})):allSellable.filter(i=>i.sellable!==false);
+  // Never show assembly/packaging components (200:, 300:, 600: prefix items) in sales order searches
+  const pool=forPurchase?(db.items||[]).map(i=>({...i,_src:'items'})):allSellable.filter(i=>i.sellable!==false&&!isAssemblyComponent(i));
   let filtered=q?pool.filter(i=>(i.name||'').toLowerCase().includes(q)||(i.sku||'').toLowerCase().includes(q)):pool;
   if(!filtered.length){
     dd.innerHTML=`<div class="fp-srch-no-items">No products found for "<strong>${q}</strong>"</div>`;
@@ -9850,13 +9908,26 @@ function openSOPage(data){
       // Set item search input
       const srchInp=document.getElementById(`so-item-inp-${idx}`);
       if(srchInp&&li.itemId){
-        const it=[...(db.items||[]),...(db.compositeItems||[])].find(i=>String(i.id)===String(li.itemId));
-        const label=it?it.name:(li.itemName||`Item #${li.itemId}`);
-        srchInp.value=label;
+        let it=[...(db.items||[]),...(db.compositeItems||[])].find(i=>String(i.id)===String(li.itemId));
+        // If stored item is an assembly/packaging component, try to heal by finding the
+        // real saleable item via the line's walmartSku or shopifySku
+        if(it&&isAssemblyComponent(it)){
+          const lookupSku=(li.walmartSku||li.shopifySku||li.sku||'').toLowerCase();
+          if(lookupSku){
+            const healed=[...(db.items||[]),...(db.compositeItems||[])].find(i=>(i.sku||'').toLowerCase()===lookupSku&&!isAssemblyComponent(i));
+            if(healed){it=healed;li.itemId=healed.id;} // heal in-memory
+          }
+        }
+        const label=it?`${it.name}${it.sku?' ['+it.sku+']':''}`:( li.itemName||`Item #${li.itemId}`);
+        srchInp.value=it?it.name:(li.itemName||`Item #${li.itemId}`);
         srchInp.dataset.itemId=li.itemId;
-        srchInp.dataset.itemName=label;
-        srchInp.dataset.itemSrc=it&&(db.compositeItems||[]).find(i=>i.id===it.id)?'compositeItems':'items';
+        srchInp.dataset.itemName=it?it.name:(li.itemName||'');
+        srchInp.dataset.itemSrc=it&&(db.compositeItems||[]).find(i=>String(i.id)===String(it.id))?'compositeItems':'items';
         srchInp.classList.add('has-value');
+        // Visual warning if item still unresolved or is assembly component
+        if(!it||(it&&isAssemblyComponent(it))){
+          srchInp.style.borderColor='#dc2626';srchInp.title='⚠ Wrong item — search and re-select the correct product';
+        }
       }
       // Set qty, rate, desc
       const qtyEl=document.getElementById(`so-qty-${idx}`);
@@ -14446,6 +14517,19 @@ ${(()=>{
   }
   return df('ShipStation',`<span style="color:#9ca3af;font-size:12px">Not yet pushed</span>`);
 })()}
+${so.walmartOrderId?(()=>{
+  if(so.walmartShipped){
+    return df('Walmart',`<span style="display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <span style="color:#16a34a;font-weight:600">✓ Tracking Sent</span>
+      <span style="font-size:11px;color:var(--text-light)">${so.walmartShippedAt?new Date(so.walmartShippedAt).toLocaleString():''} · ${so.walmartTrackingNumber||so.trackingNumber||''}</span>
+      <button class="btn btn-sm btn-outline" id="walmart-track-inline-${so.id}" onclick="(async()=>{const b=document.getElementById('walmart-track-inline-${so.id}');if(b){b.disabled=true;b.textContent='Resending…';}try{const s=db.salesOrders.find(o=>o.id===${so.id});if(s)s.walmartShipped=false;await syncWalmartOrderTracking(${so.id});}finally{if(b){b.disabled=false;b.textContent='↺ Resend';}}renderSODetail(${so.id});})()" style="font-size:11px;padding:2px 10px">↺ Resend</button>
+    </span>`);
+  }
+  return df('Walmart',`<span style="display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap">
+    <span style="color:#d97706;font-weight:600">⚠ Tracking Not Sent</span>
+    <button class="btn btn-sm" id="walmart-track-now-${so.id}" onclick="(async()=>{const b=document.getElementById('walmart-track-now-${so.id}');if(b){b.disabled=true;b.textContent='Sending…';}try{await syncWalmartOrderTracking(${so.id});}finally{if(b){b.disabled=false;b.textContent='📦 Send Now';}}renderSODetail(${so.id});})()" style="font-size:11px;padding:2px 10px;background:#0071dc;color:#fff;border:none;border-radius:4px;cursor:pointer">📦 Send Now</button>
+  </span>`);
+})():''}
 </div>
 <div class="detail-section" style="display:flex;align-items:center;gap:8px">📦 Ship To <span style="font-size:11px;font-weight:400;color:var(--text-light)">(for ShipStation)</span></div>
 <div style="background:#f8f9fb;border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:12px">
@@ -14474,7 +14558,8 @@ ${(()=>{
   </div>`;
 })()}`;
   const refetchBtn=so.shopifyOrderId?`<button class="btn btn-outline btn-sm" id="so-refetch-btn-${so.id}" onclick="(async()=>{const b=document.getElementById('so-refetch-btn-${so.id}');if(b){b.disabled=true;b.textContent='Fetching…';}const s=document.createElement('div');s.id='so-refetch-status-${so.id}';s.style='font-size:11px;color:var(--text-light);margin-top:6px;width:100%;text-align:right';const pa=document.getElementById('detail-panel-actions');if(pa){pa.parentNode.insertBefore(s,pa.nextSibling);}await refetchShopifyOrder(${so.shopifyOrderId},{statusEl:s,btnEl:b,refreshSOId:${so.id}});if(b&&!b.disabled){b.textContent='🔄 Re-fetch';}})()">🔄 Re-fetch</button>`:'';
-  openDetailPanel(so.soNo,body,`<button class="btn btn-outline btn-sm" onclick="closeDetailPanel()">Close</button><button class="btn btn-outline btn-sm" onclick="printSalesOrder(${so.id})">🖨 Print SO</button>${refetchBtn}<button class="btn btn-primary btn-sm" onclick="closeDetailPanel();openSOPage(db.salesOrders.find(o=>o.id===${so.id}))">✏️ Edit</button>`);
+  const walmartTrackBtn=so.walmartOrderId?`<button class="btn btn-outline btn-sm" id="walmart-track-btn-${so.id}" onclick="(async()=>{const b=document.getElementById('walmart-track-btn-${so.id}');if(b){b.disabled=true;b.textContent='Updating…';}try{await syncWalmartOrderTracking(${so.id});}finally{if(b){b.disabled=false;b.textContent='📦 → Walmart';}}})()">📦 → Walmart</button>`:'';
+  openDetailPanel(so.soNo,body,`<button class="btn btn-outline btn-sm" onclick="closeDetailPanel()">Close</button><button class="btn btn-outline btn-sm" onclick="printSalesOrder(${so.id})">🖨 Print SO</button>${refetchBtn}${walmartTrackBtn}<button class="btn btn-primary btn-sm" onclick="closeDetailPanel();openSOPage(db.salesOrders.find(o=>o.id===${so.id}))">✏️ Edit</button>`);
 }
 
 function packOrder(soId){
@@ -16620,6 +16705,17 @@ async function syncShipStationShipments(dryRun=false){
     if(ssOrderId && !invOrder.ssOrderId) invOrder.ssOrderId=ssOrderId;
     addShipmentLog(`  ✓ Inventory updated — status=Shipped, tracking=${trackingNumber}`,'success');
 
+    // ── Auto-push tracking to Walmart if this is a Walmart order ─────────────
+    if(invOrder.walmartOrderId && !invOrder.walmartShipped){
+      addShipmentLog(`  → Walmart order detected (${invOrder.walmartOrderId}) — pushing tracking to Walmart…`,'info');
+      try{
+        await updateWalmartTracking(invOrder,{trackingNumber,carrierCode,serviceCode,shipDate:invOrder.shipDate});
+        addShipmentLog(`  ✓ Walmart tracking pushed successfully`,'success');
+      }catch(wErr){
+        addShipmentLog(`  ⚠ Walmart tracking push failed (will need manual update): ${wErr.message}`,'warn');
+      }
+    }
+
     // ── Create a Shipments record (Inventory → Shipments view) ───────────────
     if(!db.shipments)db.shipments=[];
     const existingShipRec=db.shipments.find(s=>s.ssShipmentId===shipmentId||s.trackingNo===trackingNumber);
@@ -16749,6 +16845,148 @@ function buildTrackingUrl(carrierCode, trackingNumber){
     ontrac:`https://www.ontrac.com/trackres.asp?tracking_number=${tn}`
   };
   return urls[carrierCode]||'';
+}
+
+// ── Walmart carrier name map (SS carrierCode → Walmart carrier string) ─────────
+const WALMART_CARRIER_MAP={
+  ups:'UPS',fedex:'FedEx',stamps_com:'USPS',usps:'USPS',
+  dhl_global_mail:'DHL eCommerce',dhl_express:'DHL Express',
+  ontrac:'OnTrac',amazon_buy_shipping:'Amazon'
+};
+
+// ── Update Walmart with tracking info after shipping in ShipStation ───────────
+// soId: our internal SO id (or pass the so object directly)
+// shipment: optional ShipStation shipment object {trackingNumber,carrierCode,serviceCode,shipDate}
+async function updateWalmartTracking(soOrId, shipment=null){
+  const so=typeof soOrId==='object'?soOrId:(db.salesOrders||[]).find(o=>o.id===soOrId||o.soNo===soOrId);
+  if(!so){showToast('❌ Order not found');return false;}
+  if(!so.walmartOrderId){showToast('❌ This order has no Walmart Order ID');return false;}
+
+  const tracking=shipment?.trackingNumber||so.trackingNumber||so.tracking||'';
+  const carrierCode=shipment?.carrierCode||so.carrierCode||'';
+  const serviceCode=shipment?.serviceCode||so.shippingService||'Standard';
+  const shipDate=shipment?.shipDate||so.shipDate||new Date().toISOString().substring(0,10);
+
+  if(!tracking){showToast('❌ No tracking number found — ship the order in ShipStation first, then sync.');return false;}
+
+  const walmartCarrier=WALMART_CARRIER_MAP[carrierCode]||(CARRIER_MAP[carrierCode]||carrierCode||'Other');
+  const shipDateTime=new Date(shipDate+'T12:00:00.000Z').toISOString();
+
+  // Build line items from the SO
+  const lineItems=so.items||so.lineItems||[];
+  if(!lineItems.length){showToast('❌ No line items on this order');return false;}
+
+  const orderLinePayload=lineItems.map((li,idx)=>({
+    lineNumber:String(li.lineNumber||li.lineNo||(idx+1)),
+    orderLineStatuses:{
+      orderLineStatus:[{
+        status:'Shipped',
+        statusQuantity:{unitOfMeasurement:'EACH',amount:String(li.qty||li.quantity||1)},
+        trackingInfo:{
+          shipDateTime,
+          carrierName:{carrier:walmartCarrier,otherCarrier:null},
+          methodCode:serviceCode||'Standard',
+          trackingNumber:tracking,
+          trackingURL:buildTrackingUrl(carrierCode,tracking)||''
+        }
+      }]
+    }
+  }));
+
+  const walmartBody={orderShipment:{orderLines:{orderLine:orderLinePayload}}};
+
+  addShipmentLog(`→ Updating Walmart order ${so.walmartOrderId} with tracking ${tracking} (${walmartCarrier})…`,'info');
+
+  try{
+    const result=await walmartFetch(`orders/${so.walmartOrderId}/shipping`,{
+      method:'POST',
+      params:{},
+      body:walmartBody
+    });
+    addShipmentLog(`✓ Walmart shipping update sent! Result: ${JSON.stringify(result).substring(0,120)}`,'success');
+    so.walmartShipped=true;
+    so.walmartShippedAt=new Date().toISOString();
+    so.walmartTrackingNumber=tracking;
+    so.walmartCarrier=walmartCarrier;
+    saveDB();
+    showToast(`✓ Walmart updated — tracking ${tracking} sent to Walmart`);
+    renderSalesOrders();
+    return true;
+  }catch(e){
+    addShipmentLog(`✗ Walmart shipping update failed: ${e.message}`,'error');
+    showToast(`✗ Walmart update failed: ${e.message}`);
+    return false;
+  }
+}
+
+// ── Pull tracking from ShipStation then push to Walmart ───────────────────────
+async function syncWalmartOrderTracking(soOrId){
+  const so=typeof soOrId==='object'?soOrId:(db.salesOrders||[]).find(o=>o.id===soOrId||o.soNo===soOrId);
+  if(!so){showToast('❌ Order not found');return;}
+  if(!so.walmartOrderId){showToast('❌ This order has no Walmart Order ID');return;}
+
+  const ig=(db.integrations||[]).find(i=>i.type==='shipstation'&&i.status==='connected');
+  if(!ig||!ig.credentials?.apiKey){
+    // No ShipStation — try with whatever tracking is already on the SO
+    if(so.trackingNumber){
+      return updateWalmartTracking(so);
+    }
+    showToast('❌ No ShipStation integration — add tracking manually first');return;
+  }
+
+  showToast('🔍 Searching ShipStation for shipment…');
+  addShipmentLog(`── Pulling ShipStation tracking for Walmart order ${so.walmartOrderId} (${so.soNo}) ──`,'info');
+
+  try{
+    // Search by our SO number or ssOrderId
+    let shipments=[];
+    if(so.ssOrderId){
+      const data=await ssApiCall(ig,'GET',`/shipments?orderId=${so.ssOrderId}&shipmentStatus=shipped&pageSize=50`);
+      shipments=data?.shipments||[];
+      addShipmentLog(`  Searched by SS orderId ${so.ssOrderId} → ${shipments.length} shipment(s)`,'info');
+    }
+    if(!shipments.length){
+      // Try by order number
+      const data=await ssApiCall(ig,'GET',`/shipments?orderNumber=${encodeURIComponent(so.soNo)}&shipmentStatus=shipped&pageSize=50`);
+      shipments=data?.shipments||[];
+      addShipmentLog(`  Searched by orderNumber "${so.soNo}" → ${shipments.length} shipment(s)`,'info');
+    }
+    // Filter to non-voided, with tracking
+    const valid=shipments.filter(s=>!s.voided&&s.trackingNumber);
+    if(!valid.length){
+      addShipmentLog(`  No shipped shipments with tracking found in ShipStation`,'warn');
+      // If SO already has tracking, push that
+      if(so.trackingNumber){
+        addShipmentLog(`  SO already has tracking ${so.trackingNumber} — pushing to Walmart directly`,'info');
+        return updateWalmartTracking(so);
+      }
+      showToast('⚠ No shipped shipment found in ShipStation — ship it first.');return;
+    }
+    // Use the most recent shipment
+    const latest=valid.sort((a,b)=>new Date(b.shipDate||0)-new Date(a.shipDate||0))[0];
+    addShipmentLog(`  Using shipment ${latest.shipmentId} — tracking ${latest.trackingNumber} (${latest.carrierCode})`,'info');
+    // First update inventory SO
+    so.shipped='Shipped';
+    so.packed='Packed';
+    so.trackingNumber=latest.trackingNumber;
+    so.carrier=CARRIER_MAP[latest.carrierCode]||latest.carrierCode||'';
+    so.carrierCode=latest.carrierCode||'';
+    so.shippingService=latest.serviceCode||'';
+    so.shipDate=latest.shipDate?latest.shipDate.substring(0,10):new Date().toISOString().substring(0,10);
+    so.shipStationShipmentId=latest.shipmentId;
+    if(latest.orderId&&!so.ssOrderId)so.ssOrderId=latest.orderId;
+    addShipmentLog(`  ✓ Inventory SO updated — shipped, tracking=${latest.trackingNumber}`,'success');
+    // Now push to Walmart
+    return updateWalmartTracking(so,{
+      trackingNumber:latest.trackingNumber,
+      carrierCode:latest.carrierCode,
+      serviceCode:latest.serviceCode,
+      shipDate:latest.shipDate?latest.shipDate.substring(0,10):so.shipDate
+    });
+  }catch(e){
+    addShipmentLog(`  ✗ Error pulling ShipStation: ${e.message}`,'error');
+    showToast(`✗ ShipStation error: ${e.message}`);
+  }
 }
 
 // Helper: POST to Shopify via our local proxy (limited to fulfillment writes only)
@@ -17499,13 +17737,18 @@ async function walmartFetch(endpoint, opts={}){
   if(!ig)throw new Error('No Walmart integration configured');
   const clientId=ig.credentials?.clientId||'';
   const clientSecret=ig.credentials?.clientSecret||'';
+  const reqPayload={clientId,clientSecret,endpoint,method:opts.method||'GET',params:opts.params||{}};
+  if(opts.body!==undefined)reqPayload.body=opts.body;
   const resp=await fetch('/walmart-proxy',{
     method:'POST',
     headers:authHeaders(),
-    body:JSON.stringify({clientId,clientSecret,endpoint,method:opts.method||'GET',params:opts.params||{}})
+    body:JSON.stringify(reqPayload)
   });
   if(!resp.ok){const t=await resp.text();throw new Error(`Walmart API ${resp.status}: ${t}`);}
-  return resp.json();
+  // 204 No Content is success with no body
+  if(resp.status===204)return{success:true};
+  const text=await resp.text();
+  try{return JSON.parse(text);}catch(e){return{raw:text};}
 }
 
 async function testWalmartConnection(igId){
@@ -17596,24 +17839,32 @@ async function syncWalmartOrders(igId){
         const amount=unitPrice*qty;
         const base={walmartSku:sku,shopifySku:'',itemName:item.itemDescription||sku,qty,rate:unitPrice,lineDiscount:0,discount:0,amount,isShipping:false};
         if(!sku){unmappedSkus.push('[no-sku:walmart]');return{...base,itemId:null};}
-        // 1. Permanent skuMappings — case-insensitive
+        // 3. Direct item.sku exact match (HIGHEST PRIORITY — beats skuMappings)
+        // Must skip assembly/packaging components (200:, 300: prefix items, salePrice=0)
         const _skuL=sku.toLowerCase();
-        const _permKey=Object.keys(db.skuMappings||{}).find(k=>k.toLowerCase()===_skuL);
-        const perm=_permKey?(db.skuMappings||{})[_permKey]:null;
-        if(perm){const list2=perm.src==='compositeItems'?(db.compositeItems||[]):db.items;const mi=list2.find(i=>i.id===perm.itemId);if(mi)return{...base,itemId:mi.id,itemSrc:perm.src,itemName:mi.name};}
-        // 2. pendingMappings — case-insensitive
-        const pmapping=(db.walmart.pendingMappings||[]).find(m=>(m.shopifySku||'').toLowerCase()===_skuL&&m.resolvedItemId);
-        if(pmapping){const mi=db.items.find(i=>i.id===pmapping.resolvedItemId)||(db.compositeItems||[]).find(i=>i.id===pmapping.resolvedItemId);if(mi)return{...base,itemId:mi.id,itemName:mi.name};}
-        // 3. Direct item.sku match
-        const _di=db.items.find(i=>(i.sku||'').toLowerCase()===_skuL);
-        const _dci=(db.compositeItems||[]).find(i=>(i.sku||'').toLowerCase()===_skuL);
+        const _di=db.items.find(i=>(i.sku||'').toLowerCase()===_skuL&&!isAssemblyComponent(i));
+        const _dci=(db.compositeItems||[]).find(i=>(i.sku||'').toLowerCase()===_skuL&&!isAssemblyComponent(i));
         const _d=_di||_dci;
         if(_d){
           const _dsrc=_dci&&!_di?'compositeItems':'items';
           if(!db.skuMappings)db.skuMappings={};
-          if(!Object.keys(db.skuMappings).find(k=>k.toLowerCase()===_skuL)){db.skuMappings[sku]={itemId:_d.id,src:_dsrc};}
+          // Always write/overwrite skuMappings with the direct match — prevents stale entries
+          db.skuMappings[sku]={itemId:_d.id,src:_dsrc};
           return{...base,itemId:_d.id,itemSrc:_dsrc,itemName:_d.name};
         }
+        // 1. Permanent skuMappings — case-insensitive (only if mapped item is NOT an assembly component)
+        const _permKey=Object.keys(db.skuMappings||{}).find(k=>k.toLowerCase()===_skuL);
+        const perm=_permKey?(db.skuMappings||{})[_permKey]:null;
+        if(perm){
+          const list2=perm.src==='compositeItems'?(db.compositeItems||[]):db.items;
+          const mi=list2.find(i=>i.id===perm.itemId);
+          if(mi&&!isAssemblyComponent(mi))return{...base,itemId:mi.id,itemSrc:perm.src,itemName:mi.name};
+          // Mapped item is an assembly component or missing — delete stale mapping
+          if(_permKey)delete db.skuMappings[_permKey];
+        }
+        // 2. pendingMappings — case-insensitive (only if mapped item is NOT assembly)
+        const pmapping=(db.walmart.pendingMappings||[]).find(m=>(m.shopifySku||'').toLowerCase()===_skuL&&m.resolvedItemId);
+        if(pmapping){const mi=db.items.find(i=>i.id===pmapping.resolvedItemId)||(db.compositeItems||[]).find(i=>i.id===pmapping.resolvedItemId);if(mi&&!isAssemblyComponent(mi))return{...base,itemId:mi.id,itemName:mi.name};}
         // 4. Unmapped — hold
         unmappedSkus.push(sku);
         if(!db.walmart.pendingMappings.find(m=>(m.shopifySku||'').toLowerCase()===_skuL)){
@@ -18354,10 +18605,12 @@ function currentUserBrands(){
 }
 
 // Returns true if an item is visible to the current user
+// Items with no brand are treated as "Hey Honey" (all pre-brand-launch items)
 function itemAllowedForUser(item){
   const ab=currentUserBrands();
   if(!ab)return true;
-  return ab.includes(item.brand||'');
+  const brand=item.brand||'Hey Honey'; // unbranded → Hey Honey
+  return ab.includes(brand);
 }
 
 // Returns true if a document (SO/PO/INV/BILL) is visible:
@@ -18369,7 +18622,8 @@ function docAllowedForUser(doc){
   if(items.length===0)return true;
   return items.some(li=>{
     const itm=(db.items||[]).find(i=>String(i.id)===String(li.itemId))||(db.compositeItems||[]).find(i=>String(i.id)===String(li.itemId));
-    return itm?ab.includes(itm.brand||''):false;
+    const brand=itm?(itm.brand||'Hey Honey'):'Hey Honey'; // unbranded → Hey Honey
+    return ab.includes(brand);
   });
 }
 

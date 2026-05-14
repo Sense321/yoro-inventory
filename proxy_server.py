@@ -938,16 +938,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     qs = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
                     if qs:
                         api_url += ('&' if '?' in api_url else '?') + qs
-                api_req = urllib.request.Request(api_url,
-                    headers={
-                        'Authorization': f'Bearer {access_token}',
-                        'WM_SEC.ACCESS_TOKEN': access_token,
-                        'Accept': 'application/json',
-                        'WM_SVC.NAME': 'Walmart Marketplace',
-                        'WM_QOS.CORRELATION_ID': str(_uuid.uuid4()),
-                        'WM_CONSUMER.ID': client_id,
-                        'WM_CONSUMER.CHANNEL.TYPE': '0f3e4dd4-0514-4346-b39d-af0e00ea066d',
-                    }, method=method)
+                # Support optional POST body forwarding
+                req_body_data = payload.get('body', None)
+                api_body = json.dumps(req_body_data).encode() if req_body_data is not None else None
+                api_headers = {
+                    'Authorization': f'Bearer {access_token}',
+                    'WM_SEC.ACCESS_TOKEN': access_token,
+                    'Accept': 'application/json',
+                    'WM_SVC.NAME': 'Walmart Marketplace',
+                    'WM_QOS.CORRELATION_ID': str(_uuid.uuid4()),
+                    'WM_CONSUMER.ID': client_id,
+                    'WM_CONSUMER.CHANNEL.TYPE': '0f3e4dd4-0514-4346-b39d-af0e00ea066d',
+                }
+                if api_body is not None:
+                    api_headers['Content-Type'] = 'application/json'
+                api_req = urllib.request.Request(api_url, data=api_body,
+                    headers=api_headers, method=method)
                 with urllib.request.urlopen(api_req, timeout=20) as r:
                     resp_body = r.read()
                     self.send_response(r.status)
