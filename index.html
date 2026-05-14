@@ -9632,7 +9632,7 @@ function openSOPage(data){
               <input type="text" class="fp-srch-inp${data.customerId||data.customer?' has-value':''}" id="so-customer-inp"
                 placeholder="Search or add a customer…"
                 autocomplete="off"
-                value="${(()=>{const c=(db.customers||[]).find(x=>String(x.id)===String(data.customerId||data.customer||''));return c?c.name:'';})()"
+                value="${(()=>{const c=(db.customers||[]).find(x=>String(x.id)===String(data.customerId||data.customer||''));return c?c.name:'';})()}"
                 oninput="soCustomerSearch()"
                 onfocus="soCustomerSearch()"
                 onblur="setTimeout(()=>soCustomerHideDd(),160)"
