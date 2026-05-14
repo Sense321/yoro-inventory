@@ -5167,8 +5167,8 @@ function renderIntegrations(){
         <span style="font-size:11px;font-weight:600;color:${statusColor};background:${statusColor}15;border:1px solid ${statusColor}40;border-radius:20px;padding:2px 10px;white-space:nowrap">${statusLabel}</span>
         <div style="display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end">
           ${(p.write||[]).length?`<button class="btn btn-primary btn-sm" style="font-size:11px;padding:2px 10px" onclick="pushIntegrationNow(${ig.id})" id="push-btn-${ig.id}">⚡ Push Now</button>`:''}
-          ${ig.type==='walmart'?`<button class="btn btn-outline btn-sm" style="font-size:11px;padding:2px 8px;color:#0071dc;border-color:#0071dc" onclick="testWalmartConnection(${ig.id})">🔌 Test</button>`:''}
-          ${ig.type==='walmart'?`<button class="btn btn-outline btn-sm" style="font-size:11px;padding:2px 8px" onclick="syncWalmartOrders(${ig.id})" id="pull-btn-${ig.id}">↓ Sync Orders</button>`:(p.read||[]).length?`<button class="btn btn-outline btn-sm" style="font-size:11px;padding:2px 8px" onclick="${ig.type.startsWith('amazon')?`syncAmazonOrders(${ig.id})`:`pullIntegrationNow(${ig.id})`}" id="pull-btn-${ig.id}">↓ Pull Now</button>`:''}
+          ${(ig.type==='walmart'||ig.credentials?.partnerId)?`<button class="btn btn-outline btn-sm" style="font-size:11px;padding:2px 8px;color:#0071dc;border-color:#0071dc" onclick="testWalmartConnection(${ig.id})">🔌 Test</button>`:''}
+          ${(ig.type==='walmart'||ig.credentials?.partnerId)?`<button class="btn btn-outline btn-sm" style="font-size:11px;padding:2px 8px" onclick="syncWalmartOrders(${ig.id})" id="pull-btn-${ig.id}">↓ Sync Orders</button>`:(p.read||[]).length?`<button class="btn btn-outline btn-sm" style="font-size:11px;padding:2px 8px" onclick="${ig.type.startsWith('amazon')?`syncAmazonOrders(${ig.id})`:`pullIntegrationNow(${ig.id})`}" id="pull-btn-${ig.id}">↓ Pull Now</button>`:''}
           <button class="btn btn-sm" style="font-size:11px;padding:2px 8px;background:#f3f4f6" onclick="editIntegration(${ig.id})">Edit</button>
           <button class="btn btn-sm" style="font-size:11px;padding:2px 6px;background:#fee2e2;color:#dc2626;border-color:#fca5a5" onclick="deleteIntegration(${ig.id})">✕</button>
         </div>
@@ -17248,7 +17248,7 @@ function getOrCreateWalmartCustomer(){
 }
 
 async function walmartFetch(endpoint, opts={}){
-  const ig=(db.integrations||[]).find(i=>i.type==='walmart');
+  const ig=(db.integrations||[]).find(i=>i.type==='walmart'||i.credentials?.partnerId);
   if(!ig)throw new Error('No Walmart integration configured');
   const clientId=ig.credentials?.clientId||'';
   const clientSecret=ig.credentials?.clientSecret||'';
