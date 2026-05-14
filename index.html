@@ -9609,9 +9609,18 @@ function openSOPage(data){
         <div>
           <div class="form-row">
             <label class="form-label">Customer Name <span style="color:#e53935">*</span></label>
-            <select class="form-input" id="so-customer" onchange="soLoadCustomerDefaults()">
-              <option value="">Select or add a customer</option>${custOpts}
-            </select>
+            <input type="hidden" id="so-customer" value="${data.customerId||data.customer||''}">
+            <div class="fp-srch-wrap">
+              <input type="text" class="fp-srch-inp${data.customerId||data.customer?' has-value':''}" id="so-customer-inp"
+                placeholder="Search or add a customer…"
+                autocomplete="off"
+                value="${(()=>{const c=(db.customers||[]).find(x=>String(x.id)===String(data.customerId||data.customer||''));return c?c.name:'';})()"
+                oninput="soCustomerSearch()"
+                onfocus="soCustomerSearch()"
+                onblur="setTimeout(()=>soCustomerHideDd(),160)"
+                onkeydown="soCustomerKeyNav(event)">
+              <div class="fp-srch-dd" id="so-customer-dd"></div>
+            </div>
           </div>
           <div class="form-row">
             <label class="form-label">Branch</label>
@@ -9891,6 +9900,10 @@ function soLoadCustomerDefaults(){
     fill('so-ship-country',cust.country||'');
     fill('so-ship-phone', cust.phone||'');
     fill('so-ship-email', cust.email||'');
+    // Apply order presets stored on the customer
+    if(cust.defaultDelivery){const de=document.getElementById('so-delivery');if(de&&!de.value)de.value=cust.defaultDelivery;}
+    if(cust.defaultSalesperson){const se=document.getElementById('so-salesperson');if(se&&!se.value)se.value=cust.defaultSalesperson;}
+    if(cust.defaultWarehouseId){const we=document.getElementById('so-warehouse');if(we)[...we.options].forEach(o=>{if(o.value===cust.defaultWarehouseId)o.selected=true;});}
     soUpdateNumber();
   }
 }
@@ -9908,6 +9921,173 @@ function soUpdateNumber(){
   }
   const series=document.getElementById('so-txn-series')?.value||'SO';
   el.value=`${series}-${String(num).padStart(5,'0')}`;
+}
+
+function soCustomerSearch(){
+  const inp=document.getElementById('so-customer-inp');
+  const dd=document.getElementById('so-customer-dd');
+  if(!inp||!dd)return;
+  // Clear any previously picked value when user starts typing fresh
+  const hidden=document.getElementById('so-customer');
+  if(hidden&&hidden.value){
+    // If input text no longer matches the selected customer name, deselect
+    const sel=(db.customers||[]).find(c=>String(c.id)===String(hidden.value));
+    if(sel&&inp.value.toLowerCase()!==sel.name.toLowerCase()){
+      hidden.value='';inp.classList.remove('has-value');
+    }
+  }
+  const q=(inp.value||'').toLowerCase().trim();
+  const pool=(db.customers||[]).filter(c=>!q||(c.name||'').toLowerCase().includes(q)||(c.email||'').toLowerCase().includes(q));
+  let html='';
+  if(pool.length){
+    html=pool.slice(0,30).map(c=>`<div class="fp-srch-opt" onmousedown="soCustomerPick('${c.id}','${(c.name||'').replace(/'/g,"\\'")}')">
+      <div class="fp-srch-opt-name">${c.name}</div>
+      <div class="fp-srch-opt-meta">${c.email?`<span>${c.email}</span>`:''}${c.phone?`<span>${c.phone}</span>`:''}</div>
+    </div>`).join('');
+  } else if(q){
+    html=`<div class="fp-srch-no-items">No customer found for "<strong>${q}</strong>"</div>`;
+  }
+  // Always show "+ Add new customer" at the bottom
+  html+=`<div class="fp-srch-opt" style="border-top:1px solid #e5e7eb;margin-top:2px" onmousedown="soShowAddCustomerModal()">
+    <div style="display:flex;align-items:center;gap:8px;color:var(--primary);font-weight:600;font-size:13px">
+      <span style="font-size:18px;line-height:1">＋</span> Add new customer
+    </div>
+  </div>`;
+  dd.innerHTML=html;
+  dd.style.display='block';
+}
+
+function soCustomerPick(custId,custName){
+  const inp=document.getElementById('so-customer-inp');
+  const hidden=document.getElementById('so-customer');
+  const dd=document.getElementById('so-customer-dd');
+  if(inp){inp.value=custName;inp.classList.add('has-value');}
+  if(hidden)hidden.value=custId;
+  if(dd)dd.style.display='none';
+  soLoadCustomerDefaults();
+}
+
+function soCustomerHideDd(){
+  const dd=document.getElementById('so-customer-dd');
+  if(dd)dd.style.display='none';
+  // If nothing selected, clear the input
+  const inp=document.getElementById('so-customer-inp');
+  const hidden=document.getElementById('so-customer');
+  if(inp&&hidden&&!hidden.value&&inp.value){inp.value='';inp.classList.remove('has-value');}
+}
+
+function soCustomerKeyNav(e){
+  const dd=document.getElementById('so-customer-dd');
+  if(!dd||dd.style.display==='none')return;
+  const opts=[...dd.querySelectorAll('.fp-srch-opt')];
+  const cur=dd.querySelector('.fp-srch-opt.focused');
+  if(e.key==='ArrowDown'){e.preventDefault();const next=cur?opts[opts.indexOf(cur)+1]||opts[0]:opts[0];if(cur)cur.classList.remove('focused');if(next){next.classList.add('focused');next.scrollIntoView({block:'nearest'});}}
+  else if(e.key==='ArrowUp'){e.preventDefault();const prev=cur?opts[opts.indexOf(cur)-1]||opts[opts.length-1]:opts[opts.length-1];if(cur)cur.classList.remove('focused');if(prev){prev.classList.add('focused');prev.scrollIntoView({block:'nearest'});}}
+  else if(e.key==='Enter'){e.preventDefault();if(cur)cur.dispatchEvent(new MouseEvent('mousedown'));}
+  else if(e.key==='Escape'){soCustomerHideDd();}
+}
+
+function soShowAddCustomerModal(){
+  openModal('Add New Customer',`
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+      <div style="grid-column:1/-1">
+        <label class="form-label">Customer Name <span style="color:#e53935">*</span></label>
+        <input class="form-input" id="nc-name" placeholder="Full name or company name" autofocus>
+      </div>
+      <div>
+        <label class="form-label">Email</label>
+        <input class="form-input" type="email" id="nc-email" placeholder="customer@example.com">
+      </div>
+      <div>
+        <label class="form-label">Phone</label>
+        <input class="form-input" id="nc-phone" placeholder="+1 (555) 000-0000">
+      </div>
+      <div>
+        <label class="form-label">Company</label>
+        <input class="form-input" id="nc-company" placeholder="Company name">
+      </div>
+      <div>
+        <label class="form-label">City</label>
+        <input class="form-input" id="nc-city" placeholder="City">
+      </div>
+    </div>
+    <div style="margin-top:16px;padding-top:14px;border-top:1px solid #f3f4f6">
+      <div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">📋 Order Presets — auto-applied to every new order</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+        <div>
+          <label class="form-label">Payment Terms</label>
+          <select class="form-input" id="nc-terms">
+            ${['Due on Receipt','Net 15','Net 30','Net 45','Net 60','End of Month'].map(t=>`<option>${t}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label class="form-label">SO Number Prefix</label>
+          <input class="form-input" id="nc-prefix" placeholder="e.g. QV, MA (leave blank for default)" style="text-transform:uppercase" oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9]/g,'')">
+        </div>
+        <div>
+          <label class="form-label">Default Delivery Method</label>
+          <input class="form-input" id="nc-delivery" placeholder="e.g. UPS Ground, FedEx">
+        </div>
+        <div>
+          <label class="form-label">Default Salesperson</label>
+          <input class="form-input" id="nc-salesperson" placeholder="Salesperson name">
+        </div>
+        <div>
+          <label class="form-label">Currency</label>
+          <select class="form-input" id="nc-currency">
+            <option value="USD">USD</option><option value="EUR">EUR</option><option value="GBP">GBP</option>
+            <option value="CAD">CAD</option><option value="ILS">ILS</option>
+          </select>
+        </div>
+        <div>
+          <label class="form-label">Default Warehouse</label>
+          <select class="form-input" id="nc-warehouse">
+            <option value="">— use order default —</option>
+            ${(db.warehouses||[]).map(w=>`<option value="${w.id||w.name}">${w.name}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px">
+      <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="soSaveNewCustomer()">Save &amp; Select</button>
+    </div>
+  `,'540px');
+  setTimeout(()=>document.getElementById('nc-name')?.focus(),80);
+}
+
+function soSaveNewCustomer(){
+  const name=(document.getElementById('nc-name')?.value||'').trim();
+  if(!name){alert('Customer name is required');return;}
+  if(!db.customers)db.customers=[];
+  const newId=Date.now();
+  const cust={
+    id:newId,
+    name,
+    companyName:document.getElementById('nc-company')?.value||'',
+    email:document.getElementById('nc-email')?.value||'',
+    phone:document.getElementById('nc-phone')?.value||'',
+    city:document.getElementById('nc-city')?.value||'',
+    terms:document.getElementById('nc-terms')?.value||'Due on Receipt',
+    soPrefix:document.getElementById('nc-prefix')?.value||'',
+    defaultDelivery:document.getElementById('nc-delivery')?.value||'',
+    defaultSalesperson:document.getElementById('nc-salesperson')?.value||'',
+    currency:document.getElementById('nc-currency')?.value||'USD',
+    defaultWarehouseId:document.getElementById('nc-warehouse')?.value||'',
+    status:'Active',
+    receivables:0,
+    createdAt:new Date().toISOString()
+  };
+  db.customers.push(cust);
+  saveDB();
+  closeModal();
+  // Select the new customer in the SO form
+  soCustomerPick(String(newId),name);
+  // Apply order presets to the current SO form
+  const delivEl=document.getElementById('so-delivery');if(delivEl&&cust.defaultDelivery)delivEl.value=cust.defaultDelivery;
+  const spEl=document.getElementById('so-salesperson');if(spEl&&cust.defaultSalesperson)spEl.value=cust.defaultSalesperson;
+  const whEl=document.getElementById('so-warehouse');if(whEl&&cust.defaultWarehouseId){[...whEl.options].forEach(o=>{if(o.value===cust.defaultWarehouseId)o.selected=true;});}
+  showToast(`Customer "${name}" added and selected`);
 }
 
 function saveSOPage(status='draft'){
