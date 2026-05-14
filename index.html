@@ -3868,6 +3868,7 @@ function navigate(view){
     if(ls.customers){const el=document.getElementById('last-sync-customers');if(el)el.textContent='Last sync: '+new Date(ls.customers).toLocaleString();}
     populateOrdersFromDate();
     renderShopifyMappings();
+    renderWalmartMappings();
     renderIntegrations();
     zohoCheckStatus();
   }
@@ -17266,15 +17267,21 @@ async function testWalmartConnection(igId){
   const btn=document.getElementById('push-status-'+igId);
   if(btn)btn.textContent='Testing…';
   try{
-    // Test by fetching token via proxy — endpoint 'token' triggers only the token step
+    // Test by fetching orders (limit=1) — if credentials are wrong we get 401
     const clientId=ig.credentials?.clientId||'';
     const clientSecret=ig.credentials?.clientSecret||'';
+    if(!clientId||!clientSecret){
+      ig.status='error';saveDB();
+      if(btn)btn.textContent='✗ No credentials';
+      showToast('✗ Walmart: no Client ID or Secret configured. Edit the integration.');
+      renderIntegrations();return;
+    }
     const resp=await fetch('/walmart-proxy',{
       method:'POST',
       headers:authHeaders(),
-      body:JSON.stringify({clientId,clientSecret,endpoint:'items?limit=1',method:'GET',params:{}})
+      body:JSON.stringify({clientId,clientSecret,endpoint:'orders?limit=1&status=Created',method:'GET',params:{}})
     });
-    if(resp.ok||resp.status===200){
+    if(resp.ok||resp.status===200||resp.status===204){
       ig.status='connected';
       saveDB();
       if(btn)btn.textContent='✓ Connected '+new Date().toLocaleTimeString();
@@ -17282,14 +17289,15 @@ async function testWalmartConnection(igId){
     } else {
       ig.status='error';
       saveDB();
-      if(btn)btn.textContent='✗ Error '+resp.status;
-      showToast('✗ Walmart connection failed: '+resp.status);
+      let errBody='';try{const j=await resp.json();errBody=j.error||j.message||resp.status;}catch(e2){errBody=resp.status;}
+      if(btn)btn.textContent='✗ '+errBody;
+      showToast(`✗ Walmart connection failed (${errBody}) — check Client ID & Secret`);
     }
   }catch(e){
     ig.status='error';
     saveDB();
     if(btn)btn.textContent='✗ Error';
-    showToast('✗ Walmart error: '+e.message);
+    showToast(`✗ Walmart error: ${e.message} — is the proxy server running?`);
   }
   renderIntegrations();
 }
@@ -17298,23 +17306,35 @@ async function syncWalmartOrders(igId){
   const ig=(db.integrations||[]).find(i=>i.id===igId);
   if(!ig){showToast('Walmart integration not found');return;}
   const btn=document.getElementById('pull-btn-'+igId);
-  const status=document.getElementById('push-status-'+igId);
+  const statusEl=document.getElementById('push-status-'+igId);
   if(btn){btn.disabled=true;btn.textContent='Syncing…';}
-  if(status)status.textContent='Fetching orders…';
-  addSyncLog('── Walmart order sync started ──');
+  if(statusEl)statusEl.textContent='Fetching orders…';
+  addSyncLog('── Walmart order sync started (unshipped only) ──');
   if(!db.walmart)db.walmart={lastSync:{orders:null},pendingMappings:[],pendingOrders:[]};
   try{
     const lastSync=db.walmart.lastSync?.orders||null;
     const now=new Date().toISOString();
-    const params={limit:200,'status':'Created,Acknowledged,Shipped,Delivered',lastModifiedEndDate:now};
-    if(lastSync)params.lastModifiedStartDate=lastSync;
-    const data=await walmartFetch('orders',{method:'GET',params});
-    const orders=(data?.list?.elements?.order)||[];
+    // Default start: 90 days ago on first sync, otherwise last sync time
+    const startDate=lastSync||new Date(Date.now()-90*24*60*60*1000).toISOString();
+    // Fetch ONLY unshipped orders — two separate calls (Walmart API takes one status at a time)
+    addSyncLog(`Fetching Created orders since ${new Date(startDate).toLocaleDateString()}…`);
+    const [dataCreated, dataAck] = await Promise.all([
+      walmartFetch('orders',{method:'GET',params:{limit:200,status:'Created',createdStartDate:startDate}}).catch(e=>{addSyncLog(`  Created fetch error: ${e.message}`);return null;}),
+      walmartFetch('orders',{method:'GET',params:{limit:200,status:'Acknowledged',createdStartDate:startDate}}).catch(e=>{addSyncLog(`  Acknowledged fetch error: ${e.message}`);return null;})
+    ]);
+    const orders=[
+      ...(dataCreated?.list?.elements?.order||[]),
+      ...(dataAck?.list?.elements?.order||[])
+    ];
+    // Deduplicate by purchaseOrderId
+    const seen=new Set();
+    const uniqueOrders=orders.filter(o=>{if(seen.has(o.purchaseOrderId))return false;seen.add(o.purchaseOrderId);return true;});
     addSyncLog(`Fetched ${orders.length} orders from Walmart`);
     const walmartCust=getOrCreateWalmartCustomer();
+    addSyncLog(`Fetched ${uniqueOrders.length} unshipped orders (Created: ${dataCreated?.list?.elements?.order?.length||0}, Acknowledged: ${dataAck?.list?.elements?.order?.length||0})`);
     let added=0,updated=0,held=0;
 
-    orders.forEach(ord=>{
+    uniqueOrders.forEach(ord=>{
       const poId=(ord.purchaseOrderId||'').replace(/^0+/,'');
       const soNo='WAL-'+poId;
       const unmappedSkus=[];
@@ -17322,7 +17342,9 @@ async function syncWalmartOrders(igId){
         const item=li.item||{};
         const sku=(item.sku||'').trim();
         const qty=parseInt(li.orderLineQuantity?.amount||1);
-        const unitPrice=parseFloat(li.charges?.charge?.find?.(c=>c.chargeType==='PRODUCT')?.chargeAmount?.amount||0);
+        // Walmart charge can be array or single object — normalize
+        const chargeArr=li.charges?.charge?Array.isArray(li.charges.charge)?li.charges.charge:[li.charges.charge]:[];
+        const unitPrice=parseFloat(chargeArr.find(c=>c.chargeType==='PRODUCT'||c.chargeName==='ItemPrice')?.chargeAmount?.amount||0);
         const amount=unitPrice*qty;
         const base={walmartSku:sku,shopifySku:'',itemName:item.itemDescription||sku,qty,rate:unitPrice,lineDiscount:0,discount:0,amount,isShipping:false};
         if(!sku){unmappedSkus.push('[no-sku:walmart]');return{...base,itemId:null};}
@@ -17361,16 +17383,17 @@ async function syncWalmartOrders(igId){
         return;
       }
 
-      const pa=ord.shippingInfo?.postalAddress||{};
+      // Walmart ships postalAddress at top level OR nested under shippingInfo
+      const pa=ord.postalAddress||ord.shippingInfo?.postalAddress||{};
       const shipTo={
         shipToName:pa.name||'',
-        shipToAddress:pa.address1||'',
+        shipToAddress:pa.address1||pa.streetAddress||'',
         shipToAddress2:pa.address2||'',
         shipToCity:pa.city||'',
-        shipToState:pa.state||'',
-        shipToZip:pa.postalCode||'',
-        shipToCountry:pa.country||'US',
-        shipToPhone:ord.shippingInfo?.phone||''
+        shipToState:pa.state||pa.stateCode||'',
+        shipToZip:pa.postalCode||pa.zipCode||'',
+        shipToCountry:pa.country||pa.countryCode||'US',
+        shipToPhone:ord.shippingInfo?.phone||ord.customerEmailId||''
       };
       const orderDate=(ord.orderDate||new Date().toISOString()).substring(0,10);
       const payload={soNo,refNo:ord.purchaseOrderId||'',customerId:walmartCust.id,status:'Confirmed',invoiced:'Not Invoiced',payment:'Unpaid',packed:'Not Packed',shipped:'Not Shipped',amount:resolvedItems.reduce((s,l)=>s+l.amount,0),deliveryMethod:'Walmart',channel:'Walmart',warehouseId:1,date:orderDate,items:resolvedItems,walmartOrderId:ord.purchaseOrderId,...shipTo};
@@ -17384,16 +17407,18 @@ async function syncWalmartOrders(igId){
     ig.status='connected';
     saveDB();
     const msg=`✓ ${added} added, ${updated} updated${held?' · '+held+' held (unmapped SKUs)':''}`;
-    if(status)status.textContent=msg;
+    if(statusEl)statusEl.textContent=msg;
+    showToast(`Walmart: ${msg}`);
     addSyncLog(`Walmart orders done — ${msg}`);
     renderWalmartMappings();
     if(currentView==='sales-orders')renderSalesOrders();
     if(currentView==='dashboard')renderDashboard();
     renderIntegrations();
   }catch(e){
-    if(status)status.textContent='✗ '+e.message;
-    addSyncLog(`✗ Walmart sync failed: ${e.message}`);
-    showToast('✗ Walmart sync failed: '+e.message);
+    const errMsg=e.message||'Unknown error';
+    if(statusEl)statusEl.innerHTML=`<span style="color:var(--danger)">✗ ${errMsg}</span>`;
+    addSyncLog(`✗ Walmart sync failed: ${errMsg}`);
+    showToast(`✗ Walmart sync failed: ${errMsg}`);
     if(btn){btn.disabled=false;btn.textContent='↓ Sync Orders';}
     return;
   }
