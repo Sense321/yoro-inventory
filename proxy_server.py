@@ -622,6 +622,37 @@ class Handler(http.server.BaseHTTPRequestHandler):
             json_response(self, 200, safe)
             return
 
+        # ── Serve attachment ───────────────────────────────────────────────
+        if p == '/attachment':
+            user = self._require_auth()
+            if not user: return
+            try:
+                params_qs = dict(urllib.parse.parse_qsl(parsed.query))
+                doc_type  = params_qs.get('docType', '')
+                doc_id    = params_qs.get('docId',   '')
+                name      = params_qs.get('name',    '')
+                if not doc_type or not doc_id or not name:
+                    json_response(self, 400, {'error': 'docType, docId and name required'}); return
+                # Prevent path traversal
+                safe_name = os.path.basename(name)
+                filepath  = os.path.join(DATA_DIR, 'attachments', doc_type, str(doc_id), safe_name)
+                if not os.path.isfile(filepath):
+                    self.send_response(404); self.end_headers(); return
+                import mimetypes as _mt
+                ct = _mt.guess_type(safe_name)[0] or 'application/octet-stream'
+                with open(filepath, 'rb') as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header('Content-Type', ct)
+                self.send_header('Content-Length', str(len(data)))
+                self.send_header('Content-Disposition', f'inline; filename="{safe_name}"')
+                self.send_cors()
+                self.end_headers()
+                self.wfile.write(data)
+            except Exception as e:
+                json_response(self, 500, {'error': str(e)})
+            return
+
         # ── Auth verify ────────────────────────────────────────────────────
         if p == '/auth/verify':
             token = get_token_from_headers(self.headers)
@@ -910,9 +941,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 api_req = urllib.request.Request(api_url,
                     headers={
                         'Authorization': f'Bearer {access_token}',
+                        'WM_SEC.ACCESS_TOKEN': access_token,
                         'Accept': 'application/json',
                         'WM_SVC.NAME': 'Walmart Marketplace',
                         'WM_QOS.CORRELATION_ID': str(_uuid.uuid4()),
+                        'WM_CONSUMER.ID': client_id,
+                        'WM_CONSUMER.CHANNEL.TYPE': '0f3e4dd4-0514-4346-b39d-af0e00ea066d',
                     }, method=method)
                 with urllib.request.urlopen(api_req, timeout=20) as r:
                     resp_body = r.read()
@@ -940,6 +974,86 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with open(filepath, 'wb') as f:
                 f.write(body)
             json_response(self, 200, {'ok': True})
+            return
+
+        # ── Upload attachment ──────────────────────────────────────────────
+        if p == '/upload-attachment':
+            user = self._require_auth()
+            if not user: return
+            try:
+                params_qs = dict(urllib.parse.parse_qsl(parsed.query))
+                doc_type  = params_qs.get('docType', '')
+                doc_id    = params_qs.get('docId',   '')
+                if not doc_type or not doc_id:
+                    json_response(self, 400, {'ok': False, 'error': 'docType and docId required'}); return
+                # Validate size (10 MB max)
+                MAX_SIZE = 10 * 1024 * 1024
+                if len(body) > MAX_SIZE:
+                    json_response(self, 413, {'ok': False, 'error': 'File too large (max 10 MB)'}); return
+                # Parse multipart/form-data
+                content_type = self.headers.get('Content-Type', '')
+                if 'boundary=' not in content_type:
+                    json_response(self, 400, {'ok': False, 'error': 'Expected multipart/form-data'}); return
+                boundary = content_type.split('boundary=', 1)[1].strip().encode()
+                # Manual multipart parsing — find the file part named "file"
+                filename_out = None
+                file_data    = None
+                file_mime    = 'application/octet-stream'
+                delimiter    = b'--' + boundary
+                parts        = body.split(delimiter)
+                for part in parts:
+                    if b'Content-Disposition:' not in part and b'content-disposition:' not in part:
+                        continue
+                    # Split headers from body
+                    if b'\r\n\r\n' in part:
+                        hdr_block, payload = part.split(b'\r\n\r\n', 1)
+                    elif b'\n\n' in part:
+                        hdr_block, payload = part.split(b'\n\n', 1)
+                    else:
+                        continue
+                    hdr_text = hdr_block.decode('utf-8', errors='replace')
+                    # Check it's the "file" field
+                    if 'name="file"' not in hdr_text:
+                        continue
+                    # Extract filename
+                    import re as _re
+                    m = _re.search(r'filename="([^"]*)"', hdr_text)
+                    if not m:
+                        continue
+                    raw_name = m.group(1)
+                    # Extract Content-Type if present
+                    ct_m = _re.search(r'Content-Type:\s*(\S+)', hdr_text, _re.IGNORECASE)
+                    if ct_m:
+                        file_mime = ct_m.group(1).strip()
+                    # Strip trailing CRLF/--
+                    payload = payload.rstrip(b'\r\n')
+                    if payload.endswith(b'--'):
+                        payload = payload[:-2].rstrip(b'\r\n')
+                    filename_out = raw_name
+                    file_data    = payload
+                    break
+                if not filename_out or file_data is None:
+                    json_response(self, 400, {'ok': False, 'error': 'No file found in upload'}); return
+                # Sanitize filename — keep alphanumerics, dots, dashes, underscores
+                import re as _re2
+                safe_name = _re2.sub(r'[^\w.\-]', '_', filename_out)
+                if not safe_name:
+                    safe_name = 'attachment'
+                # Save to DATA_DIR/attachments/{docType}/{docId}/
+                att_dir = os.path.join(DATA_DIR, 'attachments', doc_type, str(doc_id))
+                os.makedirs(att_dir, exist_ok=True)
+                dest = os.path.join(att_dir, safe_name)
+                with open(dest, 'wb') as f:
+                    f.write(file_data)
+                json_response(self, 200, {
+                    'ok':   True,
+                    'id':   safe_name,
+                    'name': safe_name,
+                    'size': len(file_data),
+                    'type': file_mime
+                })
+            except Exception as e:
+                json_response(self, 500, {'ok': False, 'error': str(e)})
             return
 
         # ── Send email ────────────────────────────────────────────────────
@@ -1143,6 +1257,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
             users = [u for u in load_users() if u['id'] != uid]
             save_users(users)
             json_response(self, 200, {'ok': True})
+            return
+
+        # DELETE /attachment?docType=...&docId=...&name=...
+        if p.rstrip('/') == '/attachment':
+            user = self._require_auth()
+            if not user: return
+            try:
+                params_qs = dict(urllib.parse.parse_qsl(parsed.query))
+                doc_type  = params_qs.get('docType', '')
+                doc_id    = params_qs.get('docId',   '')
+                name      = params_qs.get('name',    '')
+                if not doc_type or not doc_id or not name:
+                    json_response(self, 400, {'ok': False, 'error': 'docType, docId and name required'}); return
+                safe_name = os.path.basename(name)
+                filepath  = os.path.join(DATA_DIR, 'attachments', doc_type, str(doc_id), safe_name)
+                if os.path.isfile(filepath):
+                    os.remove(filepath)
+                json_response(self, 200, {'ok': True})
+            except Exception as e:
+                json_response(self, 500, {'ok': False, 'error': str(e)})
             return
 
         self.send_response(404)

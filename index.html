@@ -3938,10 +3938,12 @@ async function saveAppToPermanent(){
 }
 
 function renderDashboard(){
-  const toPackCount=db.salesOrders.filter(o=>o.status==='Confirmed'&&o.packed==='Not Packed').length;
-  const toShipCount=db.salesOrders.filter(o=>o.packed==='Packed'&&o.shipped==='Not Shipped').length;
-  const toInvCount=db.salesOrders.filter(o=>o.invoiced==='Not Invoiced'&&o.shipped==='Shipped').length;
-  const poRecvCount=db.purchaseOrders.filter(o=>o.status==='Issued'&&o.received==='Pending').length;
+  const _soFiltered=db.salesOrders.filter(docAllowedForUser);
+  const _poFiltered=db.purchaseOrders.filter(docAllowedForUser);
+  const toPackCount=_soFiltered.filter(o=>o.status==='Confirmed'&&o.packed==='Not Packed').length;
+  const toShipCount=_soFiltered.filter(o=>o.packed==='Packed'&&o.shipped==='Not Shipped').length;
+  const toInvCount=_soFiltered.filter(o=>o.invoiced==='Not Invoiced'&&o.shipped==='Shipped').length;
+  const poRecvCount=_poFiltered.filter(o=>o.status==='Issued'&&o.received==='Pending').length;
   document.getElementById('dash-to-pick').textContent=toPackCount;
   document.getElementById('dash-to-pack').textContent=toPackCount;
   document.getElementById('dash-to-ship').textContent=toShipCount;
@@ -3954,7 +3956,7 @@ function renderDashboard(){
     .concat((db.assemblyOrders||[]).flatMap(a=>(a.components||a.items||[]).map(c=>String(c.itemId))))
   );
   const itemSales={};
-  db.salesOrders.forEach(so=>{
+  _soFiltered.forEach(so=>{
     (so.items||so.lines||[]).forEach(li=>{
       if(!li.itemId||li.isShipping)return; // skip shipping lines and unmatched
       if(bomComponentIds.has(String(li.itemId)))return; // skip BOM components
@@ -3981,7 +3983,9 @@ function renderDashboard(){
     </tr>`;
   });
   document.getElementById('dash-top-items').innerHTML=topItemsHtml||'<tr><td colspan="3" style="text-align:center;padding:32px;color:#999">No sales yet</td></tr>';
-  let actHtml='<div style="font-size:12px;line-height:1.8"><div>📦 SO received: '+db.salesOrders.length+'</div><div>💰 Invoices pending: '+db.invoices.filter(i=>i.status!=='Paid').length+'</div><div>🏪 Bills pending: '+db.bills.filter(b=>b.status!=='Paid').length+'</div></div>';
+  const _invFiltered=db.invoices.filter(docAllowedForUser);
+  const _billFiltered=db.bills.filter(docAllowedForUser);
+  let actHtml='<div style="font-size:12px;line-height:1.8"><div>📦 SO received: '+_soFiltered.length+'</div><div>💰 Invoices pending: '+_invFiltered.filter(i=>i.status!=='Paid').length+'</div><div>🏪 Bills pending: '+_billFiltered.filter(b=>b.status!=='Paid').length+'</div></div>';
   document.getElementById('dash-activity').innerHTML=actHtml;
   // Task widgets
   const allTasks=db.tasks||[];
@@ -4186,7 +4190,7 @@ function renderItems(){
   const status=document.getElementById('items-status-filter')?.value||'';
   const brandFilter=document.getElementById('items-brand-filter')?.value||'';
   const whFilter=document.getElementById('items-wh-filter')?.value||'';
-  let filtered=db.items;
+  let filtered=db.items.filter(itemAllowedForUser);
   if(search)filtered=filtered.filter(i=>i.name.toLowerCase().includes(search)||(i.sku||'').toLowerCase().includes(search));
   if(cat)filtered=filtered.filter(i=>i.category===cat);
   const _activeBrandFilter=_activeBrand||brandFilter;
@@ -4285,7 +4289,7 @@ function renderSalesOrders(){
   const custF=document.getElementById('so-customer-filter')?.value||'';
   const delivF=document.getElementById('so-delivery-filter')?.value||'';
 
-  let filtered=[...db.salesOrders];
+  let filtered=[...db.salesOrders].filter(docAllowedForUser);
   if(dashFilter&&dashFilter.fn)filtered=filtered.filter(dashFilter.fn);
   else if(currentStatus&&currentStatus!=='All')filtered=filtered.filter(o=>o.status===currentStatus);
   if(_activeBrand)filtered=filtered.filter(o=>{const b=_soDocBrand(o);return !b||_brandEq(b,_activeBrand);});
@@ -4442,7 +4446,7 @@ function soBatchDelete(){
 
 function renderInvoices(){
   const search=document.getElementById('invoices-search')?.value?.toLowerCase()||'';
-  let filtered=db.invoices;
+  let filtered=db.invoices.filter(docAllowedForUser);
   if(dashFilter&&dashFilter.fn)filtered=filtered.filter(dashFilter.fn);
   else if(currentStatus&&currentStatus!=='All')filtered=filtered.filter(i=>i.status===currentStatus);
   if(_activeBrand)filtered=filtered.filter(i=>{const b=_invDocBrand(i);return !b||_brandEq(b,_activeBrand);});
@@ -4621,7 +4625,7 @@ function renderExpenses(){
 function renderPurchaseOrders(){
   const search=document.getElementById('po-search')?.value?.toLowerCase()||'';
   const brandFilter=document.getElementById('po-brand-filter')?.value||'';
-  let filtered=db.purchaseOrders;
+  let filtered=db.purchaseOrders.filter(docAllowedForUser);
   if(dashFilter&&dashFilter.fn)filtered=filtered.filter(dashFilter.fn);
   else if(currentStatus&&currentStatus!=='All')filtered=filtered.filter(p=>p.status===currentStatus);
   const banner=document.getElementById('po-dash-banner');
@@ -4676,7 +4680,7 @@ function renderBills(){
   document.getElementById('bills-today').textContent=fmt(today);
   document.getElementById('bills-30').textContent=fmt(days30);
   document.getElementById('bills-overdue').textContent=fmt(overdue);
-  let filtered=db.bills;
+  let filtered=db.bills.filter(docAllowedForUser);
   if(currentStatus&&currentStatus!=='All')filtered=filtered.filter(b=>b.status===currentStatus);
   if(_activeBrand)filtered=filtered.filter(b=>{const br=_billDocBrand(b);return !br||_brandEq(br,_activeBrand);});
   if(search)filtered=filtered.filter(b=>b.billNo.toLowerCase().includes(search)||(b.refNo||'').toLowerCase().includes(search)||((db.vendors.find(v=>v.id===b.vendorId)||{}).name||'').toLowerCase().includes(search));
@@ -4714,7 +4718,7 @@ function renderCompositeItems(){
   const search=document.getElementById('composite-items-search')?.value?.toLowerCase()||'';
   const brandFilter=document.getElementById('composite-brand-filter')?.value||'';
   const whFilter=document.getElementById('composite-wh-filter')?.value||'';
-  let data=(db.compositeItems||[]).filter(ci=>ci.itemType!=='Kit Item'&&!ci.isVirtualKit);
+  let data=(db.compositeItems||[]).filter(ci=>ci.itemType!=='Kit Item'&&!ci.isVirtualKit).filter(itemAllowedForUser);
   if(search)data=data.filter(ci=>ci.name.toLowerCase().includes(search)||(ci.sku||'').toLowerCase().includes(search)||(ci.itemType||'').toLowerCase().includes(search));
   const _ciBrandF=_activeBrand||brandFilter;
   if(_ciBrandF)data=data.filter(ci=>!ci.brand||_brandEq(ci.brand,_ciBrandF));
@@ -9805,12 +9809,13 @@ function openSOPage(data){
         </div>
         <div>
           <label class="form-label">Attach File(s) to Sales Order</label>
-          <div style="border:2px dashed #d1d5db;border-radius:8px;padding:24px;text-align:center;color:#9ca3af;font-size:13px;cursor:pointer;margin-top:4px" onclick="document.getElementById('so-file').click()">
+          <div id="so-dropzone" style="border:2px dashed #d1d5db;border-radius:8px;padding:24px;text-align:center;color:#9ca3af;font-size:13px;cursor:pointer;margin-top:4px" onclick="document.getElementById('so-file').click()">
             <div style="font-size:24px;margin-bottom:6px">&#128206;</div>
             <div>Upload File</div>
             <div style="font-size:11px;margin-top:4px">You can upload a maximum of 10 files, 5MB each</div>
-            <input type="file" id="so-file" multiple style="display:none">
+            <input type="file" id="so-file" multiple style="display:none" onchange="soHandleFileSelect(event)">
           </div>
+          <div id="so-attachments-list" style="margin-top:8px"></div>
           <div style="font-size:12px;color:#9ca3af;margin-top:10px;padding-top:10px;border-top:1px solid #f3f4f6">
             Additional Fields: Add custom fields to your sales orders by going to
             <span style="color:var(--primary)">Settings &gt; Sales &gt; Sales Orders &gt; Field Customization</span>.
@@ -9863,6 +9868,11 @@ function openSOPage(data){
       fpCalcLine('so',idx);
     });
   }
+  // Initialize attachment state
+  window._soPendingFiles=[];
+  window._soDeletedAttachments=[];
+  window._soSavedAttachments=(data.attachments||[]).slice();
+  soRenderAttachmentList();
 }
 
 function soGetWholesaleChannel(custId){
@@ -10108,7 +10118,7 @@ function soSaveNewCustomer(){
   showToast(`Customer "${name}" added and selected`);
 }
 
-function saveSOPage(status='draft'){
+async function saveSOPage(status='draft'){
   const cust=document.getElementById('so-customer')?.value;
   if(!cust){alert('Customer Name is required');return;}
   if(!db.salesOrders)db.salesOrders=[];
@@ -10165,11 +10175,20 @@ function saveSOPage(status='draft'){
     amount:soAmt,
     total:soAmt
   };
+  let soId;
   if(editId){
     // update existing
     const existing=db.salesOrders.find(s=>String(s.id)===String(editId));
-    if(existing){Object.assign(existing,payload);showToast('Sales Order updated');}
-    else{showToast('Order not found','error');}
+    if(existing){
+      // Handle deletions first
+      await _attHandleDeletes('so',editId,window._soDeletedAttachments||[]);
+      Object.assign(existing,payload);
+      soId=existing.id;
+      // Upload pending files and merge
+      const newAtts=await _attUploadPending('so',soId,window._soPendingFiles||[]);
+      existing.attachments=[...(existing.attachments||[]),...newAtts];
+      showToast('Sales Order updated');
+    } else {showToast('Order not found','error');}
   } else {
     const wc=soGetWholesaleChannel(cust);
     if(wc){
@@ -10186,9 +10205,12 @@ function saveSOPage(status='draft'){
     } else {
       if(db.nextId)db.nextId.salesOrders=(db.nextId.salesOrders||100)+1;
     }
+    soId=Date.now();
+    const newAtts=await _attUploadPending('so',soId,window._soPendingFiles||[]);
     db.salesOrders.push({
-      id:Date.now(),
+      id:soId,
       ...payload,
+      attachments:newAtts,
       invoiced:'Uninvoiced',
       payment:'Unpaid',
       packed:'Not Packed',
@@ -10196,7 +10218,194 @@ function saveSOPage(status='draft'){
     });
     showToast('Sales Order saved');
   }
+  window._soPendingFiles=[];window._soDeletedAttachments=[];
   saveDB();closeFP();renderCurrentView();
+}
+
+// ── ATTACHMENT HELPERS ────────────────────────────────────────────────────────
+// Generic low-level helpers used by all doc types
+async function _attUploadPending(docType,docId,pendingFiles){
+  const uploaded=[];
+  for(const f of (pendingFiles||[])){
+    try{
+      const fd=new FormData();
+      fd.append('file',f);
+      const r=await fetch(`/upload-attachment?docType=${encodeURIComponent(docType)}&docId=${encodeURIComponent(docId)}`,{
+        method:'POST',
+        headers:{'Authorization':'Bearer '+(_authToken||'')},
+        body:fd
+      });
+      if(r.ok){
+        const d=await r.json();
+        if(d.ok)uploaded.push({name:d.name,size:d.size,type:d.type});
+      }
+    }catch(e){console.error('attachment upload failed',e);}
+  }
+  return uploaded;
+}
+
+async function _attHandleDeletes(docType,docId,deletedNames){
+  for(const name of (deletedNames||[])){
+    try{
+      await fetch(`/attachment?docType=${encodeURIComponent(docType)}&docId=${encodeURIComponent(docId)}&name=${encodeURIComponent(name)}`,{
+        method:'DELETE',
+        headers:{'Authorization':'Bearer '+(_authToken||'')}
+      });
+    }catch(e){console.error('attachment delete failed',e);}
+  }
+}
+
+function _attFormatSize(bytes){
+  if(bytes>=1048576)return (bytes/1048576).toFixed(1)+' MB';
+  if(bytes>=1024)return (bytes/1024).toFixed(0)+' KB';
+  return bytes+' B';
+}
+
+// Returns attachment URL for serving
+function _attUrl(docType,docId,name){
+  return `/attachment?docType=${encodeURIComponent(docType)}&docId=${encodeURIComponent(docId)}&name=${encodeURIComponent(name)}`;
+}
+
+// Generic render — prefix is 'so'/'po'/'inv'/'bill', docType is 'so'/'po'/'inv'/'bill', docId may be blank for new records
+function _attRenderList(prefix,docType,docId,savedAtts,pendingFiles,deletedNames){
+  const el=document.getElementById(prefix+'-attachments-list');
+  if(!el)return;
+  const total=(savedAtts||[]).filter(a=>!(deletedNames||[]).includes(a.name)).length+(pendingFiles||[]).length;
+  // Show/hide dropzone
+  const dz=document.getElementById(prefix+'-dropzone');
+  if(dz)dz.style.display=total>=10?'none':'';
+  if(!total){el.innerHTML='';return;}
+  let html='<div style="display:flex;flex-direction:column;gap:4px;margin-top:4px">';
+  // Saved attachments
+  for(const a of (savedAtts||[])){
+    if((deletedNames||[]).includes(a.name))continue;
+    const url=docId?_attUrl(docType,docId,a.name):'#';
+    html+=`<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;font-size:12px">
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${a.name}">${a.name}</span>
+      <span style="color:#9ca3af;white-space:nowrap">${_attFormatSize(a.size||0)}</span>
+      <a href="${url}" target="_blank" style="color:var(--primary);text-decoration:none;font-size:11px" onclick="event.stopPropagation()">Download</a>
+      <button onclick="${prefix}DeleteAttachment('${a.name.replace(/'/g,"\\'")}');event.stopPropagation()" style="background:none;border:none;color:#e53935;cursor:pointer;font-size:14px;line-height:1;padding:0 2px" title="Remove">&times;</button>
+    </div>`;
+  }
+  // Pending files
+  for(let i=0;i<(pendingFiles||[]).length;i++){
+    const f=pendingFiles[i];
+    html+=`<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;font-size:12px">
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${f.name}">${f.name}</span>
+      <span style="color:#9ca3af;white-space:nowrap">${_attFormatSize(f.size||0)}</span>
+      <span style="background:#fef3c7;color:#92400e;font-size:10px;padding:1px 5px;border-radius:3px">pending</span>
+      <button onclick="${prefix}RemovePending(${i});event.stopPropagation()" style="background:none;border:none;color:#e53935;cursor:pointer;font-size:14px;line-height:1;padding:0 2px" title="Remove">&times;</button>
+    </div>`;
+  }
+  html+='</div>';
+  el.innerHTML=html;
+}
+
+// ── SO attachment functions ──
+function soHandleFileSelect(event){
+  const MAX_FILE=5*1024*1024;
+  const MAX_TOTAL=10;
+  const pending=window._soPendingFiles||[];
+  const saved=(window._soSavedAttachments||[]).filter(a=>!(window._soDeletedAttachments||[]).includes(a.name));
+  for(const f of event.target.files){
+    if(f.size>MAX_FILE){showToast(`${f.name} exceeds 5 MB limit`,'error');continue;}
+    if(pending.length+saved.length>=MAX_TOTAL){showToast('Maximum 10 files allowed','error');break;}
+    pending.push(f);
+  }
+  window._soPendingFiles=pending;
+  event.target.value='';
+  soRenderAttachmentList();
+}
+function soRenderAttachmentList(){
+  const editId=document.getElementById('so-edit-id')?.value||'';
+  _attRenderList('so','so',editId,window._soSavedAttachments||[],window._soPendingFiles||[],window._soDeletedAttachments||[]);
+}
+function soDeleteAttachment(name){
+  window._soDeletedAttachments=(window._soDeletedAttachments||[]);
+  if(!window._soDeletedAttachments.includes(name))window._soDeletedAttachments.push(name);
+  soRenderAttachmentList();
+}
+function soRemovePending(idx){
+  (window._soPendingFiles||[]).splice(idx,1);
+  soRenderAttachmentList();
+}
+
+// ── Invoice attachment functions ──
+function invHandleFileSelect(event){
+  const MAX_FILE=10*1024*1024;const MAX_TOTAL=10;
+  const pending=window._invPendingFiles||[];
+  const saved=(window._invSavedAttachments||[]).filter(a=>!(window._invDeletedAttachments||[]).includes(a.name));
+  for(const f of event.target.files){
+    if(f.size>MAX_FILE){showToast(`${f.name} exceeds 10 MB limit`,'error');continue;}
+    if(pending.length+saved.length>=MAX_TOTAL){showToast('Maximum 10 files allowed','error');break;}
+    pending.push(f);
+  }
+  window._invPendingFiles=pending;event.target.value='';
+  invRenderAttachmentList();
+}
+function invRenderAttachmentList(){
+  _attRenderList('inv','inv',window._invEditId||'',window._invSavedAttachments||[],window._invPendingFiles||[],window._invDeletedAttachments||[]);
+}
+function invDeleteAttachment(name){
+  window._invDeletedAttachments=(window._invDeletedAttachments||[]);
+  if(!window._invDeletedAttachments.includes(name))window._invDeletedAttachments.push(name);
+  invRenderAttachmentList();
+}
+function invRemovePending(idx){
+  (window._invPendingFiles||[]).splice(idx,1);
+  invRenderAttachmentList();
+}
+
+// ── PO attachment functions ──
+function poHandleFileSelect(event){
+  const MAX_FILE=10*1024*1024;const MAX_TOTAL=10;
+  const pending=window._poPendingFiles||[];
+  const saved=(window._poSavedAttachments||[]).filter(a=>!(window._poDeletedAttachments||[]).includes(a.name));
+  for(const f of event.target.files){
+    if(f.size>MAX_FILE){showToast(`${f.name} exceeds 10 MB limit`,'error');continue;}
+    if(pending.length+saved.length>=MAX_TOTAL){showToast('Maximum 10 files allowed','error');break;}
+    pending.push(f);
+  }
+  window._poPendingFiles=pending;event.target.value='';
+  poRenderAttachmentList();
+}
+function poRenderAttachmentList(){
+  _attRenderList('po','po',window._editingPOId||'',window._poSavedAttachments||[],window._poPendingFiles||[],window._poDeletedAttachments||[]);
+}
+function poDeleteAttachment(name){
+  window._poDeletedAttachments=(window._poDeletedAttachments||[]);
+  if(!window._poDeletedAttachments.includes(name))window._poDeletedAttachments.push(name);
+  poRenderAttachmentList();
+}
+function poRemovePending(idx){
+  (window._poPendingFiles||[]).splice(idx,1);
+  poRenderAttachmentList();
+}
+
+// ── Bill attachment functions ──
+function billHandleFileSelect(event){
+  const MAX_FILE=10*1024*1024;const MAX_TOTAL=5;
+  const pending=window._billPendingFiles||[];
+  const saved=(window._billSavedAttachments||[]).filter(a=>!(window._billDeletedAttachments||[]).includes(a.name));
+  for(const f of event.target.files){
+    if(f.size>MAX_FILE){showToast(`${f.name} exceeds 10 MB limit`,'error');continue;}
+    if(pending.length+saved.length>=MAX_TOTAL){showToast('Maximum 5 files allowed','error');break;}
+    pending.push(f);
+  }
+  window._billPendingFiles=pending;event.target.value='';
+  billRenderAttachmentList();
+}
+function billRenderAttachmentList(){
+  _attRenderList('bill','bill',window._billEditId||'',window._billSavedAttachments||[],window._billPendingFiles||[],window._billDeletedAttachments||[]);
+}
+function billDeleteAttachment(name){
+  window._billDeletedAttachments=(window._billDeletedAttachments||[]);
+  if(!window._billDeletedAttachments.includes(name))window._billDeletedAttachments.push(name);
+  billRenderAttachmentList();
+}
+function billRemovePending(idx){
+  (window._billPendingFiles||[]).splice(idx,1);
+  billRenderAttachmentList();
 }
 
 // ── INVOICE FULL-PAGE ──
@@ -10339,12 +10548,13 @@ function openInvoicePage(){
         </div>
         <div>
           <label class="form-label">Attach File(s) to Invoice</label>
-          <div style="border:2px dashed #d1d5db;border-radius:8px;padding:24px;text-align:center;color:#9ca3af;font-size:13px;cursor:pointer;margin-top:4px" onclick="document.getElementById('inv-file').click()">
+          <div id="inv-dropzone" style="border:2px dashed #d1d5db;border-radius:8px;padding:24px;text-align:center;color:#9ca3af;font-size:13px;cursor:pointer;margin-top:4px" onclick="document.getElementById('inv-file').click()">
             <div style="font-size:24px;margin-bottom:6px">&#128206;</div>
             <div>Upload File</div>
             <div style="font-size:11px;margin-top:4px">You can upload a maximum of 10 files, 10MB each</div>
-            <input type="file" id="inv-file" multiple style="display:none">
+            <input type="file" id="inv-file" multiple style="display:none" onchange="invHandleFileSelect(event)">
           </div>
+          <div id="inv-attachments-list" style="margin-top:8px"></div>
           <div style="background:#e8f5e9;border:1px solid #a5d6a7;border-radius:6px;padding:10px 12px;margin-top:12px;font-size:12px;color:#2e7d32">
             <div style="font-weight:600;margin-bottom:2px">&#128176; Want to get paid faster?</div>
             Configure payment gateways and receive payments online.
@@ -10373,6 +10583,12 @@ function openInvoicePage(){
   </div>
 
 </div>`);
+  // Initialize attachment state
+  window._invPendingFiles=[];
+  window._invDeletedAttachments=[];
+  window._invSavedAttachments=[];
+  window._invEditId='';
+  invRenderAttachmentList();
 }
 
 function invCalcDueDate(){
@@ -10401,7 +10617,7 @@ function invLoadCustomerDefaults(){
   invCalcDueDate();
 }
 
-function saveInvoicePage(status='draft'){
+async function saveInvoicePage(status='draft'){
   const cust=document.getElementById('inv-customer')?.value;
   if(!cust){alert('Customer Name is required');return;}
   if(!db.invoices)db.invoices=[];
@@ -10421,8 +10637,10 @@ function saveInvoicePage(status='draft'){
       amount:parseFloat(document.getElementById(`inv-amt-${idx}`)?.textContent)||0
     });
   });
+  const invId=Date.now();
+  const newAtts=await _attUploadPending('inv',invId,window._invPendingFiles||[]);
   db.invoices.push({
-    id:Date.now(),
+    id:invId,
     invNo:invNum,number:invNum,
     orderNumber:document.getElementById('inv-po-num')?.value||'',
     customerId:cust,
@@ -10438,10 +10656,12 @@ function saveInvoicePage(status='draft'){
     customerNotes:document.getElementById('inv-notes')?.value||'',
     termsConditions:document.getElementById('inv-tnc')?.value||'',
     items:lines,
+    attachments:newAtts,
     status,
     amount:invAmt,total:invAmt,balanceDue:invAmt
   });
   if(db.nextId)db.nextId.invoices=(db.nextId.invoices||100)+1;
+  window._invPendingFiles=[];window._invDeletedAttachments=[];
   saveDB();closeFP();renderCurrentView();showToast('Invoice saved');
 }
 
@@ -10893,12 +11113,13 @@ function openPOPage(){
         </div>
         <div>
           <label class="form-label">Attach File(s) to Purchase Order</label>
-          <div style="border:2px dashed #d1d5db;border-radius:8px;padding:24px;text-align:center;color:#9ca3af;font-size:13px;cursor:pointer;margin-top:4px" onclick="document.getElementById('po-file').click()">
+          <div id="po-dropzone" style="border:2px dashed #d1d5db;border-radius:8px;padding:24px;text-align:center;color:#9ca3af;font-size:13px;cursor:pointer;margin-top:4px" onclick="document.getElementById('po-file').click()">
             <div style="font-size:24px;margin-bottom:6px">&#128206;</div>
             <div>Upload File</div>
             <div style="font-size:11px;margin-top:4px">You can upload a maximum of 10 files, 10MB each</div>
-            <input type="file" id="po-file" multiple style="display:none">
+            <input type="file" id="po-file" multiple style="display:none" onchange="poHandleFileSelect(event)">
           </div>
+          <div id="po-attachments-list" style="margin-top:8px"></div>
           <div style="font-size:12px;color:#9ca3af;margin-top:10px;padding-top:10px;border-top:1px solid #f3f4f6">
             Additional Fields: <span style="color:var(--primary)">Settings &gt; Purchases &gt; Purchase Orders</span>
           </div>
@@ -10927,6 +11148,11 @@ function openPOPage(){
   </div>
 
 </div>`);
+  // Initialize attachment state (editPOPage will override _poSavedAttachments when editing)
+  window._poPendingFiles=[];
+  window._poDeletedAttachments=[];
+  if(!window._editingPOId){window._poSavedAttachments=[];}
+  poRenderAttachmentList();
 }
 
 function poUpdateDelivery(){
@@ -10935,7 +11161,7 @@ function poUpdateDelivery(){
   document.getElementById('po-dest-customer').style.display=dest==='customer'?'block':'none';
 }
 
-function savePOPage(status='draft'){
+async function savePOPage(status='draft'){
   const vendor=document.getElementById('po-vendor')?.value;
   if(!vendor){alert('Vendor Name is required');return;}
   if(!db.purchaseOrders)db.purchaseOrders=[];
@@ -10985,13 +11211,19 @@ function savePOPage(status='draft'){
   if(editId){
     const idx=db.purchaseOrders.findIndex(p=>p.id===editId);
     if(idx>=0){
-      db.purchaseOrders[idx]={...db.purchaseOrders[idx],...poData};
+      await _attHandleDeletes('po',editId,window._poDeletedAttachments||[]);
+      const newAtts=await _attUploadPending('po',editId,window._poPendingFiles||[]);
+      const existingAtts=(db.purchaseOrders[idx].attachments||[]).filter(a=>!(window._poDeletedAttachments||[]).includes(a.name));
+      db.purchaseOrders[idx]={...db.purchaseOrders[idx],...poData,attachments:[...existingAtts,...newAtts]};
     }
     window._editingPOId=null;
   } else {
-    db.purchaseOrders.push({id:Date.now(),received:'Not Received',billed:'Unbilled',...poData});
+    const poId=Date.now();
+    const newAtts=await _attUploadPending('po',poId,window._poPendingFiles||[]);
+    db.purchaseOrders.push({id:poId,received:'Not Received',billed:'Unbilled',attachments:newAtts,...poData});
     if(db.nextId)db.nextId.purchaseOrders=(db.nextId.purchaseOrders||100)+1;
   }
+  window._poPendingFiles=[];window._poDeletedAttachments=[];
   saveDB();closeFP();renderCurrentView();showToast(editId?'Purchase Order updated':'Purchase Order saved');
 }
 
@@ -11041,6 +11273,11 @@ function editPOPage(id){
       if(amtEl)amtEl.textContent=(li.amount||0).toFixed(2);
     });
     fpCalcTotals('po');
+    // Load saved attachments
+    window._poSavedAttachments=(po.attachments||[]).slice();
+    window._poPendingFiles=[];
+    window._poDeletedAttachments=[];
+    poRenderAttachmentList();
   },100);
 }
 
@@ -11185,12 +11422,13 @@ function openBillPage(){
         </div>
         <div>
           <label class="form-label">Attach File(s) to Bill</label>
-          <div style="border:2px dashed #d1d5db;border-radius:8px;padding:20px;text-align:center;color:#9ca3af;font-size:13px;cursor:pointer;margin-top:4px" onclick="document.getElementById('bill-file').click()">
+          <div id="bill-dropzone" style="border:2px dashed #d1d5db;border-radius:8px;padding:20px;text-align:center;color:#9ca3af;font-size:13px;cursor:pointer;margin-top:4px" onclick="document.getElementById('bill-file').click()">
             <div style="font-size:22px;margin-bottom:4px">&#128206;</div>
             <div>Upload File</div>
             <div style="font-size:11px;margin-top:4px">You can upload a maximum of 5 files, 10MB each</div>
-            <input type="file" id="bill-file" multiple style="display:none">
+            <input type="file" id="bill-file" multiple style="display:none" onchange="billHandleFileSelect(event)">
           </div>
+          <div id="bill-attachments-list" style="margin-top:8px"></div>
           <div style="font-size:12px;color:#9ca3af;margin-top:10px">
             Additional Fields: <span style="color:var(--primary)">Settings &gt; Purchases &gt; Bills</span>
           </div>
@@ -11206,6 +11444,12 @@ function openBillPage(){
     <button style="background:none;border:none;color:var(--primary);font-size:11px;cursor:pointer;padding:0;margin-top:4px">Change</button>
   </div>
 </div>`);
+  // Initialize attachment state
+  window._billPendingFiles=[];
+  window._billDeletedAttachments=[];
+  window._billSavedAttachments=[];
+  window._billEditId='';
+  billRenderAttachmentList();
 }
 
 // ── LANDED COST HELPERS ──
@@ -11338,7 +11582,7 @@ function billCalcDue(){
   d.setDate(d.getDate()+days);dueEl.value=d.toISOString().slice(0,10);
 }
 
-function saveBillPage(status='draft'){
+async function saveBillPage(status='draft'){
   const vendor=document.getElementById('bill-vendor')?.value;
   if(!vendor){alert('Vendor Name is required');return;}
   if(!db.bills)db.bills=[];
@@ -11365,6 +11609,7 @@ function saveBillPage(status='draft'){
   const vendorName=(db.vendors||[]).find(v=>String(v.id)===String(vendor))?.name||'';
   const billDate=document.getElementById('bill-date')?.value;
   const billId=Date.now();
+  const newAtts=await _attUploadPending('bill',billId,window._billPendingFiles||[]);
   db.bills.push({
     id:billId,
     billNo:billNum,number:billNum,
@@ -11379,6 +11624,7 @@ function saveBillPage(status='draft'){
     warehouseId:document.getElementById('bill-warehouse')?.value||'',
     notes:document.getElementById('bill-notes')?.value||'',
     lines,
+    attachments:newAtts,
     landedCostLines:lcLines,
     landedCostTotal:lcTotal,
     status,
@@ -11389,6 +11635,7 @@ function saveBillPage(status='draft'){
   if(lcLines.length&&poId){
     allocateLandedCosts(poId,billId,billNum,billDate,vendor,vendorName,lcLines);
   }
+  window._billPendingFiles=[];window._billDeletedAttachments=[];
   saveDB();closeFP();renderCurrentView();showToast('Bill saved'+(lcLines.length?` · Landed costs allocated across ${(db.purchaseOrders||[]).find(p=>String(p.id)===String(poId))?.lines?.length||0} item(s)`:''));
 }
 
@@ -18093,6 +18340,39 @@ const PERM_DEFS=[
   {key:'canPushNotifications', label:'🔒 Push Notifications',  group:'Admin',        col:'write'},
 ];
 
+const BRAND_OPTIONS=[
+  {key:'Hey Honey',    label:'Hey Honey',    color:'#e05a00'},
+  {key:'AristoSpice',  label:'Aristo Spice', color:'#16a34a'},
+];
+
+// Returns array of allowed brands for current user, or null if unrestricted
+function currentUserBrands(){
+  if(!currentUser)return null;
+  const ab=currentUser.allowedBrands;
+  if(!ab||ab.length===0)return null; // null = no restriction
+  return ab;
+}
+
+// Returns true if an item is visible to the current user
+function itemAllowedForUser(item){
+  const ab=currentUserBrands();
+  if(!ab)return true;
+  return ab.includes(item.brand||'');
+}
+
+// Returns true if a document (SO/PO/INV/BILL) is visible:
+// visible if it has at least one item from an allowed brand, OR has no items at all
+function docAllowedForUser(doc){
+  const ab=currentUserBrands();
+  if(!ab)return true;
+  const items=doc.items||doc.lineItems||[];
+  if(items.length===0)return true;
+  return items.some(li=>{
+    const itm=(db.items||[]).find(i=>String(i.id)===String(li.itemId))||(db.compositeItems||[]).find(i=>String(i.id)===String(li.itemId));
+    return itm?ab.includes(itm.brand||''):false;
+  });
+}
+
 let _allUsers=[];
 async function _loadUsersIfNeeded(){
   if(_allUsers.length)return;
@@ -18204,20 +18484,31 @@ function openUserModal(uid){
         <span>Account Active</span>
       </label>
     </div>
+    <div style="margin-bottom:16px;padding:12px;background:#f8f9fb;border-radius:8px;border:1px solid var(--border)">
+      <label class="form-label" style="margin-bottom:8px;display:block">Brand Access</label>
+      <div style="font-size:12px;color:var(--text-light);margin-bottom:10px">Leave all unchecked for unrestricted access to all brands.</div>
+      <div style="display:flex;gap:16px">
+        ${BRAND_OPTIONS.map(b=>`
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;font-weight:600;color:${b.color}">
+            <input type="checkbox" id="brand-${b.key.replace(/\s/g,'_')}" ${(u?.allowedBrands||[]).includes(b.key)?'checked':''} style="width:15px;height:15px;accent-color:${b.color}">
+            ${b.label}
+          </label>
+        `).join('')}
+      </div>
+    </div>
     <div id="perm-section" style="${u?.role==='admin'?'opacity:.5;pointer-events:none':''}">
       <div style="font-size:13px;font-weight:700;margin:16px 0 10px;padding-top:12px;border-top:2px solid var(--border)">Permissions</div>
       <div style="font-size:12px;color:var(--text-light);margin-bottom:12px">Admins always have full access. For other roles, choose what this user can do.</div>
       ${permsHtml}
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:20px;padding-top:16px;border-top:1px solid var(--border)">
+      <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveUserModal('${uid||''}')">
+        ${isNew ? 'Create User' : 'Save Changes'}
+      </button>
     </div>`;
 
   openModal(isNew?'Add New User':'Edit User', html, '640px');
-  // Wire up the built-in save button
-  const saveBtn = document.getElementById('modal-save-btn');
-  if(saveBtn){
-    saveBtn.style.display = '';
-    saveBtn.textContent = isNew ? 'Create User' : 'Save Changes';
-    saveBtn.onclick = function(){ saveUserModal(uid||''); };
-  }
 }
 
 function onRoleChange(){
@@ -18237,7 +18528,9 @@ async function saveUserModal(uid){
   if(!uid&&(!password||password.length<8)){showToast('Password must be at least 8 characters','error');return;}
   const permissions={};
   PERM_DEFS.forEach(p=>{permissions[p.key]=document.getElementById('perm-'+p.key)?.checked||false;});
+  const allowedBrands=BRAND_OPTIONS.map(b=>b.key).filter(k=>document.getElementById('brand-'+k.replace(/\s/g,'_'))?.checked);
   const payload={name,email,role,active,permissions};
+  payload.allowedBrands=allowedBrands;
   if(uid)payload.id=uid; else payload.username=username;
   if(password)payload.newPassword=password;
   if(!uid)payload.password=password;
@@ -18245,6 +18538,11 @@ async function saveUserModal(uid){
     const r=await fetch('/users',{method:'POST',headers:authHeaders(),body:JSON.stringify(payload)});
     const d=await r.json();
     if(!d.ok){showToast(d.error||'Error saving user','error');return;}
+    // If editing the currently logged-in user, update in-memory brand restrictions
+    if(uid&&currentUser&&String(currentUser.id)===String(uid)){
+      currentUser.allowedBrands=allowedBrands;
+      renderCurrentView();
+    }
     closeModal();
     showToast(uid?'User updated':'User created');
     renderUsers();
