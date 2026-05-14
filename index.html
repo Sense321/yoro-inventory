@@ -17338,7 +17338,8 @@ async function syncWalmartOrders(igId){
       const poId=(ord.purchaseOrderId||'').replace(/^0+/,'');
       const soNo='WAL-'+poId;
       const unmappedSkus=[];
-      const resolvedItems=(ord.orderLines?.orderLine||[]).map(li=>{
+      const _rawLines=ord.orderLines?.orderLine||[];
+      const resolvedItems=(Array.isArray(_rawLines)?_rawLines:[_rawLines]).map(li=>{
         const item=li.item||{};
         const sku=(item.sku||'').trim();
         const qty=parseInt(li.orderLineQuantity?.amount||1);
@@ -17395,7 +17396,7 @@ async function syncWalmartOrders(igId){
         shipToCountry:pa.country||pa.countryCode||'US',
         shipToPhone:ord.shippingInfo?.phone||ord.customerEmailId||''
       };
-      const orderDate=(ord.orderDate||new Date().toISOString()).substring(0,10);
+      const orderDate=ord.orderDate?new Date(typeof ord.orderDate==='number'?ord.orderDate:ord.orderDate).toISOString().substring(0,10):new Date().toISOString().substring(0,10);
       const payload={soNo,refNo:ord.purchaseOrderId||'',customerId:walmartCust.id,status:'Confirmed',invoiced:'Not Invoiced',payment:'Unpaid',packed:'Not Packed',shipped:'Not Shipped',amount:resolvedItems.reduce((s,l)=>s+l.amount,0),deliveryMethod:'Walmart',channel:'Walmart',warehouseId:1,date:orderDate,items:resolvedItems,walmartOrderId:ord.purchaseOrderId,...shipTo};
       const existing=db.salesOrders.find(s=>s.walmartOrderId===ord.purchaseOrderId||s.soNo===soNo);
       if(existing){Object.assign(existing,payload);updated++;}
@@ -17632,7 +17633,8 @@ async function retryWalmartPendingOrders(){
     });
     if(stillUnmapped.length>0)continue;
     const ord=po.ordData;
-    const resolvedItems=(ord.orderLines?.orderLine||[]).map(li=>{
+    const _rawLines2=ord.orderLines?.orderLine||[];
+    const resolvedItems=(Array.isArray(_rawLines2)?_rawLines2:[_rawLines2]).map(li=>{
       const item=li.item||{};
       const sku=(item.sku||'').trim();
       const qty=parseInt(li.orderLineQuantity?.amount||1);
@@ -17650,7 +17652,7 @@ async function retryWalmartPendingOrders(){
     });
     const pa=ord.shippingInfo?.postalAddress||{};
     const shipTo={shipToName:pa.name||'',shipToAddress:pa.address1||'',shipToAddress2:pa.address2||'',shipToCity:pa.city||'',shipToState:pa.state||'',shipToZip:pa.postalCode||'',shipToCountry:pa.country||'US',shipToPhone:ord.shippingInfo?.phone||''};
-    const orderDate=(ord.orderDate||new Date().toISOString()).substring(0,10);
+    const orderDate=ord.orderDate?new Date(typeof ord.orderDate==='number'?ord.orderDate:ord.orderDate).toISOString().substring(0,10):new Date().toISOString().substring(0,10);
     const poId=(ord.purchaseOrderId||'').replace(/^0+/,'');
     const soNo='WAL-'+poId;
     const payload={soNo,refNo:ord.purchaseOrderId||'',customerId:walmartCust.id,status:'Confirmed',invoiced:'Not Invoiced',payment:'Unpaid',packed:'Not Packed',shipped:'Not Shipped',amount:resolvedItems.reduce((s,l)=>s+l.amount,0),deliveryMethod:'Walmart',channel:'Walmart',warehouseId:1,date:orderDate,items:resolvedItems,walmartOrderId:ord.purchaseOrderId,...shipTo};
