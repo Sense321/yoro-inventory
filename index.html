@@ -8158,6 +8158,15 @@ function openItemPanel(data){
       <select class="form-input" id="si-uom">${uomOpts}</select>
     </div>
 
+    <!-- Measuring Unit (gram-based calculation field) -->
+    <div class="form-row">
+      <label class="form-label" style="color:#2d6a4f;font-weight:600">Measuring Unit</label>
+      <div style="display:flex;flex-direction:column;gap:4px;flex:1">
+        <input class="form-input" id="si-unit" placeholder="e.g. 1g, 0.6kg, 1kg" value="${data.unit||''}" style="font-family:monospace">
+        <span style="font-size:11px;color:var(--text-light)">Used for gram-based inventory tracking. Examples: <code>1g</code> (1 unit = 1 gram), <code>0.6kg</code> (1 unit = 600g), <code>1kg</code> (1 unit = 1000g). Leave blank for non-gram items.</span>
+      </div>
+    </div>
+
     <!-- Category -->
     <div class="form-row">
       <label class="form-label">Category</label>
@@ -8511,6 +8520,7 @@ function saveItemPanel(){
     aliasName:document.getElementById('si-alias')?.value.trim()||'',
     sku,
     uom:document.getElementById('si-uom').value,
+    unit:document.getElementById('si-unit')?.value.trim()||'',
     category:document.getElementById('si-category').value,
     returnable:document.getElementById('si-returnable').checked,
     isComponent:document.getElementById('si-is-component')?.checked||false,
@@ -8647,6 +8657,13 @@ function openCompositePanel(data){
     <div class="form-row">
       <label class="form-label">Unit *</label>
       <select class="form-input" id="ci-uom">${uomOpts}</select>
+    </div>
+    <div class="form-row">
+      <label class="form-label" style="color:#2d6a4f;font-weight:600">Measuring Unit</label>
+      <div style="display:flex;flex-direction:column;gap:4px;flex:1">
+        <input class="form-input" id="ci-unit" placeholder="e.g. 1g, 0.6kg, 1kg" value="${data.unit||''}" style="font-family:monospace">
+        <span style="font-size:11px;color:var(--text-light)">Used for gram-based inventory tracking. Examples: <code>1g</code>, <code>0.6kg</code>, <code>1kg</code>. Leave blank for non-gram items.</span>
+      </div>
     </div>
     <div class="form-row">
       <label class="form-label">Category</label>
@@ -8998,6 +9015,7 @@ function saveCompositePanel(){
     itemType:document.querySelector('input[name="ci-item-type"]:checked')?.value||'Assembly Item',
     sku:document.getElementById('ci-sku').value.trim(),
     uom:document.getElementById('ci-uom').value,
+    unit:document.getElementById('ci-unit')?.value.trim()||'',
     category:document.getElementById('ci-category').value,
     returnable:document.getElementById('ci-returnable').checked,
     isVirtualKit:(document.querySelector('input[name="ci-item-type"]:checked')?.value||'Assembly Item')==='Kit Item',
