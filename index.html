@@ -13256,9 +13256,21 @@ function completeAssemblyInventory(ao,assembledDate,assembledBy){
   const ci=(db.compositeItems||[]).find(i=>String(i.id)===String(ao.compositeItemId));
   if(!ci){completeAssembly(ao.id);return;}
   const components=ci.components||[];
-  if(!components.length){showToast('No components defined — cannot complete assembly','warning');return;}
   const totalQty=parseFloat(ao.qty)||1;
   const whId=ao.warehouseId?String(ao.warehouseId):((_activeWarehouses()[0]?.id&&String(_activeWarehouses()[0].id))||null);
+  // If no BOM defined: complete assembly adding finished goods only (no component deduction)
+  if(!components.length){
+    const _old=parseFloat(ci.onHand)||0;
+    ci.onHand=_old+totalQty;
+    if(whId){if(!ci.warehouseStock)ci.warehouseStock={};ci.warehouseStock[whId]=(parseFloat(ci.warehouseStock[whId])||0)+totalQty;}
+    addAuditEntry(ci,_old,ci.onHand,'Assembly: '+ao.orderNo,'assembly',whId,[]);
+    ao.status='Assembled';ao.manufacturedQty=totalQty;
+    ao.assembledDate=assembledDate;ao.assembledBy=assembledBy;
+    ao.completedAt=new Date().toISOString();
+    saveDB();recalcDerivedCosts();renderCurrentView();
+    showToast('✓ Assembly '+ao.orderNo+' marked assembled');
+    return;
+  }
   // Check for shortfalls
   const negComps=[];
   components.forEach(comp=>{
