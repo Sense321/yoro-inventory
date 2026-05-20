@@ -3029,7 +3029,13 @@ function resolveBOMItem(itemId,src){
 function calcAssemblyCost(ci){
   return (ci.components||[]).reduce((s,c)=>{
     const comp=resolveBOMItem(c.itemId,c.src);
-    return s+(comp?parseFloat(comp.costPrice)||0:0)*(parseFloat(c.qty)||0);
+    if(!comp)return s;
+    const qty=parseFloat(c.qty)||0;
+    if(c.unit==='g'){
+      const cpg=_costPerGram(comp);
+      return s+(cpg!=null?cpg*qty:(parseFloat(comp.costPrice)||0)*qty);
+    }
+    return s+(parseFloat(comp.costPrice)||0)*qty;
   },0);
 }
 function calcKitCost(kit){
@@ -3397,7 +3403,7 @@ function getWarehouseBreakdown(item){
       if(wk&&wk!=='0')committed[wk]=(committed[wk]||0)+(parseFloat(li.qty)||0);
     });
   });
-  return (db.warehouses||[]).map(w=>{
+  return _activeWarehouses().map(w=>{
     const wk=String(w.id);
     const qty=parseFloat(stock[w.id])||0;
     const com=committed[wk]||0;
@@ -3823,8 +3829,8 @@ function globalSearch(q,panelId){
   if(!q){panel.style.display='none';return;}
   _gsResults=[];
   const push=(type,label,sub,view,action)=>_gsResults.push({type,label,sub,view,action});
-  (db.items||[]).forEach(i=>{if(i.name.toLowerCase().includes(q)||(i.sku||'').toLowerCase().includes(q))push('item',i.name,i.sku||'','items',()=>{navigate('items');setTimeout(()=>showItemDetail(i.id),80);});});
-  (db.compositeItems||[]).forEach(i=>{if(i.name.toLowerCase().includes(q)||(i.sku||'').toLowerCase().includes(q))push('composite',i.name,i.sku||'','composite-items',()=>{navigate('composite-items');setTimeout(()=>showCompositeDetail(i.id),80);});});
+  (db.items||[]).filter(itemAllowedForUser).forEach(i=>{if(i.name.toLowerCase().includes(q)||(i.sku||'').toLowerCase().includes(q))push('item',i.name,i.sku||'','items',()=>{navigate('items');setTimeout(()=>showItemDetail(i.id),80);});});
+  (db.compositeItems||[]).filter(itemAllowedForUser).forEach(i=>{if(i.name.toLowerCase().includes(q)||(i.sku||'').toLowerCase().includes(q))push('composite',i.name,i.sku||'','composite-items',()=>{navigate('composite-items');setTimeout(()=>showCompositeDetail(i.id),80);});});
   (db.customers||[]).forEach(c=>{if(c.name.toLowerCase().includes(q)||(c.email||'').toLowerCase().includes(q))push('customer',c.name,c.email||'','customers',()=>{navigate('customers');setTimeout(()=>showCustDetail(c.id),80);});});
   (db.salesOrders||[]).forEach(o=>{if(o.soNo.toLowerCase().includes(q)||(o.refNo||'').toLowerCase().includes(q))push('order',o.soNo,(o.refNo?'Ref: '+o.refNo:'')+' · '+fmt(o.amount),'sales-orders',()=>{navigate('sales-orders');setTimeout(()=>showSODetail(o.id),80);});});
   (db.vendors||[]).forEach(v=>{if(v.name.toLowerCase().includes(q))push('vendor',v.name,'','vendors',()=>{navigate('vendors');});});
@@ -4097,7 +4103,7 @@ function openAdjustQtyModal(itemId, collection){
     ?(db.compositeItems||[]).find(i=>i.id===itemId)
     :(db.items||[]).find(i=>i.id===itemId);
   if(!item){showToast('Item not found','warning');return;}
-  const whs=db.warehouses||[];
+  const whs=_activeWarehouses();
   const rows=whs.map(w=>{
     const cur=parseFloat((item.warehouseStock||{})[w.id]??0)||0;
     return`<tr>
@@ -4159,7 +4165,7 @@ function _doAdjustQty(itemId, col){
     :(db.items||[]).find(i=>i.id===itemId);
   if(!item)return;
   const reason=(document.getElementById('aqm-reason')?.value||'').trim()||'Manual adjustment';
-  const whs=db.warehouses||[];
+  const whs=_activeWarehouses();
   if(!item.warehouseStock)item.warehouseStock={};
   let anyChange=false;
   const oldTotal=parseFloat(item.onHand)||0;
@@ -4245,9 +4251,9 @@ function renderItems(){
   const brandSel=document.getElementById('items-brand-filter');
   if(brandSel)brandSel.innerHTML='<option value="">All Brands</option>'+[...brands].sort().map(b=>`<option ${b===brandFilter?'selected':''}>${b}</option>`).join('');
   const whSel=document.getElementById('items-wh-filter');
-  if(whSel){const cur=whSel.value;whSel.innerHTML='<option value="">All Warehouses</option>'+(db.warehouses||[]).map(w=>`<option value="${w.id}"${String(w.id)===String(cur)?'selected':''}>${w.name}</option>`).join('');}
+  if(whSel){const cur=whSel.value;whSel.innerHTML='<option value="">All Warehouses</option>'+_activeWarehouses().map(w=>`<option value="${w.id}"${String(w.id)===String(cur)?'selected':''}>${w.name}</option>`).join('');}
   filtered=applySort(filtered,'items',{name:i=>i.name,sku:i=>i.sku||'',category:i=>i.category||'',brand:i=>i.brand||'',onHand:i=>i.onHand,reorderPt:i=>i.reorderPt,costPrice:i=>i.costPrice,salePrice:i=>i.salePrice,status:i=>i.status});
-  const whs=db.warehouses||[];
+  const whs=_activeWarehouses();
   const thead=document.getElementById('items-thead');
   if(thead){
     const whThs=whs.map(w=>`<th style="white-space:nowrap;color:#6366f1">${w.name}</th>`).join('');
@@ -4306,6 +4312,7 @@ function renderItems(){
 function renderCustomers(){
   const search=document.getElementById('customers-search')?.value?.toLowerCase()||'';
   let filtered=db.customers.filter(c=>!currentStatus||currentStatus==='All'||c.status===currentStatus);
+  if(_activeBrand)filtered=filtered.filter(c=>(db.salesOrders||[]).some(so=>so.customerId===c.id&&docAllowedForUser(so)));
   if(search)filtered=filtered.filter(c=>c.name.toLowerCase().includes(search)||(c.email||'').toLowerCase().includes(search)||(c.phone||'').toLowerCase().includes(search)||(c.city||'').toLowerCase().includes(search));
   filtered=applySort(filtered,'customers',{name:c=>c.name,email:c=>c.email||'',phone:c=>c.phone||'',city:c=>c.city||'',receivables:c=>c.receivables});
   let html=filtered.map(c=>`<tr class="clickable-row" onclick="showCustDetail(${c.id})"><td>${c.name}</td><td>${c.email||'-'}</td><td>${c.phone||'-'}</td><td>${c.city||'-'}</td><td>${fmt(c.receivables)}</td><td>${badgeHtml(c.status||'Active')}</td></tr>`).join('');
@@ -4508,7 +4515,13 @@ function renderInvoices(){
 
 function renderPaymentsReceived(){
   const search=document.getElementById('payments-received-search')?.value?.toLowerCase()||'';
-  let data=search?db.paymentsReceived.filter(p=>p.paymentNo.toLowerCase().includes(search)||(p.invoiceNo||'').toLowerCase().includes(search)||((db.customers.find(c=>c.id===p.customerId)||{}).name||'').toLowerCase().includes(search)||(p.mode||'').toLowerCase().includes(search)):db.paymentsReceived;
+  let _prBase=db.paymentsReceived;
+  if(_activeBrand)_prBase=_prBase.filter(p=>{
+    if(p.invoiceNo){const inv=(db.invoices||[]).find(i=>i.invNo===p.invoiceNo);if(inv)return docAllowedForUser(inv);}
+    if(p.customerId)return(db.salesOrders||[]).some(so=>so.customerId===p.customerId&&docAllowedForUser(so));
+    return true;
+  });
+  let data=search?_prBase.filter(p=>p.paymentNo.toLowerCase().includes(search)||(p.invoiceNo||'').toLowerCase().includes(search)||((db.customers.find(c=>c.id===p.customerId)||{}).name||'').toLowerCase().includes(search)||(p.mode||'').toLowerCase().includes(search)):_prBase;
   let filtered=applySort(data,'payments-received',{date:p=>p.date,paymentNo:p=>p.paymentNo,customer:p=>(db.customers.find(c=>c.id===p.customerId)||{}).name||'',invoiceNo:p=>p.invoiceNo||'',mode:p=>p.mode,amount:p=>p.amount,unused:p=>p.unused||0});
   let html=filtered.map(p=>{const c=db.customers.find(x=>x.id===p.customerId);return`<tr><td>${p.date}</td><td>${p.paymentNo}</td><td>${c?.name||'?'}</td><td>${p.invoiceNo||'-'}</td><td>${p.mode}</td><td>${fmt(p.amount)}</td><td>${fmt(p.unused||0)}</td></tr>`;}).join('');
   document.getElementById('payments-received-table').innerHTML=html||'<tr class="empty-row"><td colspan="7">No payments received</td></tr>';
@@ -4519,6 +4532,11 @@ function renderSalesReturns(){
   const search=document.getElementById('sales-returns-search')?.value?.toLowerCase()||'';
   let filtered=db.salesReturns;
   if(currentStatus&&currentStatus!=='All')filtered=filtered.filter(r=>r.status===currentStatus);
+  if(_activeBrand)filtered=filtered.filter(r=>{
+    if(r.soNo){const so=(db.salesOrders||[]).find(s=>s.soNo===r.soNo);if(so)return docAllowedForUser(so);}
+    if(r.customerId)return(db.salesOrders||[]).some(so=>so.customerId===r.customerId&&docAllowedForUser(so));
+    return true;
+  });
   if(search)filtered=filtered.filter(r=>r.returnNo.toLowerCase().includes(search)||(r.soNo||'').toLowerCase().includes(search)||((db.customers.find(c=>c.id===r.customerId)||{}).name||'').toLowerCase().includes(search));
   filtered=applySort(filtered,'sales-returns',{date:r=>r.date,returnNo:r=>r.returnNo,soNo:r=>r.soNo||'',customer:r=>(db.customers.find(c=>c.id===r.customerId)||{}).name||'',status:r=>r.status,receiveStatus:r=>r.receiveStatus||'',refundStatus:r=>r.refundStatus||''});
   let html=filtered.map(r=>{const c=db.customers.find(x=>x.id===r.customerId);return`<tr><td>${r.date}</td><td>${r.returnNo}</td><td>${r.soNo||'-'}</td><td>${c?.name||'?'}</td><td>${badgeHtml(r.status)}</td><td>${r.receiveStatus||'-'}</td><td>${r.refundStatus||'-'}</td></tr>`;}).join('');
@@ -4530,6 +4548,11 @@ function renderCreditNotes(){
   const search=document.getElementById('credit-notes-search')?.value?.toLowerCase()||'';
   let filtered=db.creditNotes;
   if(currentStatus&&currentStatus!=='All')filtered=filtered.filter(n=>n.status===currentStatus);
+  if(_activeBrand)filtered=filtered.filter(n=>{
+    if(n.refNo){const so=(db.salesOrders||[]).find(s=>s.soNo===n.refNo);if(so)return docAllowedForUser(so);}
+    if(n.customerId)return(db.salesOrders||[]).some(so=>so.customerId===n.customerId&&docAllowedForUser(so));
+    return true;
+  });
   if(search)filtered=filtered.filter(n=>n.creditNo.toLowerCase().includes(search)||(n.refNo||'').toLowerCase().includes(search)||((db.customers.find(c=>c.id===n.customerId)||{}).name||'').toLowerCase().includes(search));
   filtered=applySort(filtered,'credit-notes',{date:n=>n.date,creditNo:n=>n.creditNo,refNo:n=>n.refNo||'',customer:n=>(db.customers.find(c=>c.id===n.customerId)||{}).name||'',status:n=>n.status,amount:n=>n.amount,balance:n=>n.balance||0});
   let html=filtered.map(n=>{const c=db.customers.find(x=>x.id===n.customerId);return`<tr><td>${n.date}</td><td>${n.creditNo}</td><td>${n.refNo||'-'}</td><td>${c?.name||'?'}</td><td>${badgeHtml(n.status)}</td><td>${fmt(n.amount)}</td><td>${fmt(n.balance||0)}</td></tr>`;}).join('');
@@ -4538,13 +4561,17 @@ function renderCreditNotes(){
 }
 
 function renderWarehouses(){
-  let html=db.warehouses.map(w=>`<div class="wh-card"><div class="wh-card-name">${w.name}${w.primary?' ⭐':''}</div><div class="wh-card-loc">${w.location}</div><div style="border-top:1px solid var(--border);padding-top:10px;margin-top:10px"><div class="wh-stat"><span>Status:</span><strong>${w.status}</strong></div></div></div>`).join('');
+  let html=_activeWarehouses().map(w=>`<div class="wh-card"><div class="wh-card-name">${w.name}${w.primary?' ⭐':''}</div><div class="wh-card-loc">${w.location}</div><div style="border-top:1px solid var(--border);padding-top:10px;margin-top:10px"><div class="wh-stat"><span>Status:</span><strong>${w.status}</strong></div></div></div>`).join('');
   document.getElementById('warehouses-grid').innerHTML=html||'<div style="text-align:center;padding:32px;color:#999">No warehouses</div>';
 }
 
 function renderAdjustments(){
   let filtered=db.adjustments;
   if(currentStatus&&currentStatus!=='All')filtered=filtered.filter(a=>a.status===currentStatus);
+  if(_activeBrand)filtered=filtered.filter(a=>{
+    const items=a.items||[];if(!items.length)return true;
+    return items.some(ai=>{const it=(db.items||[]).find(i=>i.id===ai.itemId)||(db.compositeItems||[]).find(i=>i.id===ai.itemId);return !it||_brandEq(it.brand||'Hey Honey',_activeBrand);});
+  });
   filtered=applySort(filtered,'adjustments',{date:a=>a.date,adjNo:a=>a.adjNo,item:a=>(db.items.find(i=>i.id===a.items[0]?.itemId)||{}).name||'',warehouse:a=>(db.warehouses.find(w=>w.id===a.items[0]?.warehouseId)||{}).name||'',qtyAdjusted:a=>a.items[0]?.qtyAdjusted||0,reason:a=>a.reason||'',newQty:a=>a.items[0]?.newQty||0,status:a=>a.status});
   let html=filtered.map(a=>{const item=a.items[0];const i=db.items.find(x=>x.id===item.itemId);const w=db.warehouses.find(x=>x.id===item.warehouseId);return`<tr><td>${a.date}</td><td>${a.adjNo}</td><td>${i?.name||'?'}</td><td>${w?.name||'?'}</td><td>${item.qtyAdjusted}</td><td>${a.reason}</td><td>${item.newQty}</td><td>${badgeHtml(a.status)}</td></tr>`;}).join('');
   document.getElementById('adjustments-table').innerHTML=html||'<tr class="empty-row"><td colspan="8">No adjustments</td></tr>';
@@ -4556,6 +4583,10 @@ function renderAuditLog(){
   const typeF=document.getElementById('audit-type-filter')?.value||'';
   const negOnly=document.getElementById('audit-neg-only')?.checked||false;
   let entries=(db.inventoryAuditLog||[]).slice();
+  if(_activeBrand){entries=entries.filter(e=>{
+    const it=[...(db.items||[]),...(db.compositeItems||[])].find(i=>String(i.id)===String(e.itemId));
+    return !it||_brandEq(it.brand||'Hey Honey',_activeBrand);
+  });}
   if(search)entries=entries.filter(e=>(e.itemName||'').toLowerCase().includes(search)||(e.sku||'').toLowerCase().includes(search)||(e.reason||'').toLowerCase().includes(search)||(e.user||'').toLowerCase().includes(search));
   if(typeF)entries=entries.filter(e=>e.type===typeF);
   if(negOnly)entries=entries.filter(e=>e.flags&&e.flags.includes('negative'));
@@ -4587,6 +4618,10 @@ function renderTransferOrders(){
   const search=(document.getElementById('to-search')?.value||'').toLowerCase().trim();
   let filtered=db.transferOrders||[];
   if(currentStatus&&currentStatus!=='All')filtered=filtered.filter(t=>t.status===currentStatus);
+  if(_activeBrand)filtered=filtered.filter(t=>{
+    const items=t.items||[];if(!items.length)return true;
+    return items.some(ti=>{const it=(db.items||[]).find(i=>i.id===ti.itemId)||(db.compositeItems||[]).find(i=>i.id===ti.itemId);return !it||_brandEq(it.brand||'Hey Honey',_activeBrand);});
+  });
   if(search){filtered=filtered.filter(t=>{
     const fw=(db.warehouses.find(w=>w.id===t.fromWarehouseId)||{}).name||'';
     const tw=(db.warehouses.find(w=>w.id===t.toWarehouseId)||{}).name||'';
@@ -4614,6 +4649,12 @@ function renderTransferOrders(){
 function renderPicklists(){
   let filtered=db.picklists;
   if(currentStatus&&currentStatus!=='All')filtered=filtered.filter(p=>p.status===currentStatus);
+  if(_activeBrand)filtered=filtered.filter(p=>{
+    const soIds=p.soIds||[];
+    if(soIds.length){return soIds.some(sid=>{const so=(db.salesOrders||[]).find(s=>String(s.id)===String(sid));return !so||docAllowedForUser(so);});}
+    if(p.soNo){const so=(db.salesOrders||[]).find(s=>s.soNo===p.soNo);if(so)return docAllowedForUser(so);}
+    return true;
+  });
   filtered=applySort(filtered,'picklists',{date:p=>p.date,pickNo:p=>p.pickNo,warehouse:p=>(db.warehouses.find(w=>w.id===p.warehouseId)||{}).name||'',salesOrders:p=>p.salesOrders||0,customer:p=>p.customer||'',itemsCount:p=>p.itemsCount||0,status:p=>p.status});
   let html=filtered.map(p=>{const w=db.warehouses.find(x=>x.id===p.warehouseId);return`<tr><td>${p.date}</td><td>${p.pickNo}</td><td>${w?.name||'?'}</td><td>${p.salesOrders||0}</td><td>${p.customer||'-'}</td><td>${p.itemsCount||0}</td><td>${badgeHtml(p.status)}</td></tr>`;}).join('');
   document.getElementById('picklists-table').innerHTML=html||'<tr class="empty-row"><td colspan="7">No picklists</td></tr>';
@@ -4624,6 +4665,11 @@ function renderPackages(){
   const search=document.getElementById('packages-search')?.value?.toLowerCase()||'';
   let filtered=db.packages;
   if(currentStatus&&currentStatus!=='All')filtered=filtered.filter(p=>p.status===currentStatus);
+  if(_activeBrand)filtered=filtered.filter(p=>{
+    if(p.soNo){const so=(db.salesOrders||[]).find(s=>s.soNo===p.soNo);if(so)return docAllowedForUser(so);}
+    if(p.customerId)return(db.salesOrders||[]).some(so=>so.customerId===p.customerId&&docAllowedForUser(so));
+    return true;
+  });
   if(search)filtered=filtered.filter(p=>p.pkgNo.toLowerCase().includes(search)||(p.soNo||'').toLowerCase().includes(search)||(p.trackingNo||'').toLowerCase().includes(search)||(p.carrier||'').toLowerCase().includes(search)||((db.customers.find(c=>c.id===p.customerId)||{}).name||'').toLowerCase().includes(search));
   filtered=applySort(filtered,'packages',{date:p=>p.date,pkgNo:p=>p.pkgNo,customer:p=>(db.customers.find(c=>c.id===p.customerId)||{}).name||'',soNo:p=>p.soNo||'',items:p=>p.items||0,carrier:p=>p.carrier||'',trackingNo:p=>p.trackingNo||'',status:p=>p.status});
   let html=filtered.map(p=>{const c=db.customers.find(x=>x.id===p.customerId);return`<tr><td>${p.date}</td><td>${p.pkgNo}</td><td>${c?.name||'?'}</td><td>${p.soNo||'-'}</td><td>${p.items||0}</td><td>${p.carrier||'-'}</td><td>${p.trackingNo||'-'}</td><td>${badgeHtml(p.status)}</td></tr>`;}).join('');
@@ -4635,6 +4681,11 @@ function renderShipments(){
   const search=document.getElementById('shipments-search')?.value?.toLowerCase()||'';
   let filtered=db.shipments;
   if(currentStatus&&currentStatus!=='All')filtered=filtered.filter(s=>s.status===currentStatus);
+  if(_activeBrand)filtered=filtered.filter(s=>{
+    if(s.soNo){const so=(db.salesOrders||[]).find(o=>o.soNo===s.soNo);if(so)return docAllowedForUser(so);}
+    if(s.customerId)return(db.salesOrders||[]).some(so=>so.customerId===s.customerId&&docAllowedForUser(so));
+    return true;
+  });
   if(search)filtered=filtered.filter(s=>s.shipNo.toLowerCase().includes(search)||(s.pkgNo||'').toLowerCase().includes(search)||(s.soNo||'').toLowerCase().includes(search)||(s.trackingNo||'').toLowerCase().includes(search)||(s.carrier||'').toLowerCase().includes(search)||((db.customers.find(c=>c.id===s.customerId)||{}).name||'').toLowerCase().includes(search));
   filtered=applySort(filtered,'shipments',{date:s=>s.date,shipNo:s=>s.shipNo,pkgNo:s=>s.pkgNo||'',customer:s=>(db.customers.find(c=>c.id===s.customerId)||{}).name||'',soNo:s=>s.soNo||'',carrier:s=>s.carrier||'',trackingNo:s=>s.trackingNo||'',status:s=>s.status});
   let html=filtered.map(s=>{const c=db.customers.find(x=>x.id===s.customerId);return`<tr><td>${s.date}</td><td>${s.shipNo}</td><td>${s.pkgNo||'-'}</td><td>${c?.name||'?'}</td><td>${s.soNo||'-'}</td><td>${s.carrier||'-'}</td><td>${s.trackingNo||'-'}</td><td>${badgeHtml(s.status)}</td></tr>`;}).join('');
@@ -4645,6 +4696,7 @@ function renderShipments(){
 function renderVendors(){
   const search=document.getElementById('vendors-search')?.value?.toLowerCase()||'';
   let filtered=db.vendors.filter(v=>!currentStatus||currentStatus==='All'||v.status===currentStatus);
+  if(_activeBrand)filtered=filtered.filter(v=>!v.brand||_brandEq(v.brand,_activeBrand));
   if(search)filtered=filtered.filter(v=>v.name.toLowerCase().includes(search)||(v.email||'').toLowerCase().includes(search)||(v.phone||'').toLowerCase().includes(search)||(v.city||'').toLowerCase().includes(search));
   filtered=applySort(filtered,'vendors',{name:v=>v.name,email:v=>v.email||'',phone:v=>v.phone||'',city:v=>v.city||'',payables:v=>v.payables});
   let html=filtered.map(v=>`<tr class="clickable-row" onclick="showVendorDetail(${v.id})"><td>${v.name}</td><td>${v.email||'-'}</td><td>${v.phone||'-'}</td><td>${v.city||'-'}</td><td>${fmt(v.payables)}</td><td>${badgeHtml(v.status||'Active')}</td></tr>`).join('');
@@ -4656,6 +4708,11 @@ function renderExpenses(){
   const search=document.getElementById('expenses-search')?.value?.toLowerCase()||'';
   let filtered=db.expenses;
   if(currentStatus&&currentStatus!=='All')filtered=filtered.filter(e=>e.billable===currentStatus||((currentStatus==='All'||currentStatus==='Non-Billable')&&!e.billable));
+  if(_activeBrand)filtered=filtered.filter(e=>{
+    if(e.brand)return _brandEq(e.brand,_activeBrand);
+    if(e.vendor){const v=(db.vendors||[]).find(x=>x.name===e.vendor);if(v)return(db.purchaseOrders||[]).some(po=>po.vendorId===v.id&&docAllowedForUser(po));}
+    return true;
+  });
   if(search)filtered=filtered.filter(e=>e.expNo.toLowerCase().includes(search)||(e.category||'').toLowerCase().includes(search)||(e.vendor||'').toLowerCase().includes(search)||(e.customer||'').toLowerCase().includes(search));
   filtered=applySort(filtered,'expenses',{date:e=>e.date,expNo:e=>e.expNo,category:e=>e.category||'',paidThrough:e=>e.paidThrough||'',vendor:e=>e.vendor||'',customer:e=>e.customer||'',billable:e=>e.billable?'Billable':'Non-Billable',amount:e=>e.amount});
   let html=filtered.map(e=>`<tr><td>${e.date}</td><td>${e.expNo}</td><td>${e.category}</td><td>${e.paidThrough||'-'}</td><td>${e.vendor||'-'}</td><td>${e.customer||'-'}</td><td>${e.billable?'Billable':'Non-Billable'}</td><td>${fmt(e.amount)}</td></tr>`).join('');
@@ -4733,7 +4790,13 @@ function renderBills(){
 
 function renderPaymentsMade(){
   const search=document.getElementById('payments-made-search')?.value?.toLowerCase()||'';
-  let data=search?db.paymentsMade.filter(p=>p.payNo.toLowerCase().includes(search)||(p.billNo||'').toLowerCase().includes(search)||((db.vendors.find(v=>v.id===p.vendorId)||{}).name||'').toLowerCase().includes(search)||(p.mode||'').toLowerCase().includes(search)):db.paymentsMade;
+  let _pmBase=db.paymentsMade;
+  if(_activeBrand)_pmBase=_pmBase.filter(p=>{
+    if(p.billNo){const bill=(db.bills||[]).find(b=>b.billNo===p.billNo);if(bill)return docAllowedForUser(bill);}
+    if(p.vendorId)return(db.purchaseOrders||[]).some(po=>po.vendorId===p.vendorId&&docAllowedForUser(po));
+    return true;
+  });
+  let data=search?_pmBase.filter(p=>p.payNo.toLowerCase().includes(search)||(p.billNo||'').toLowerCase().includes(search)||((db.vendors.find(v=>v.id===p.vendorId)||{}).name||'').toLowerCase().includes(search)||(p.mode||'').toLowerCase().includes(search)):_pmBase;
   let filtered=applySort(data,'payments-made',{date:p=>p.date,payNo:p=>p.payNo,vendor:p=>(db.vendors.find(v=>v.id===p.vendorId)||{}).name||'',billNo:p=>p.billNo||'',mode:p=>p.mode,amount:p=>p.amount,unused:p=>p.unused||0});
   let html=filtered.map(p=>{const v=db.vendors.find(x=>x.id===p.vendorId);return`<tr><td>${p.date}</td><td>${p.payNo}</td><td>${v?.name||'?'}</td><td>${p.billNo||'-'}</td><td>${p.mode}</td><td>${fmt(p.amount)}</td><td>${fmt(p.unused||0)}</td></tr>`;}).join('');
   document.getElementById('payments-made-table').innerHTML=html||'<tr class="empty-row"><td colspan="7">No payments made</td></tr>';
@@ -4744,6 +4807,10 @@ function renderVendorCredits(){
   const search=document.getElementById('vendor-credits-search')?.value?.toLowerCase()||'';
   let filtered=db.vendorCredits;
   if(currentStatus&&currentStatus!=='All')filtered=filtered.filter(vc=>vc.status===currentStatus);
+  if(_activeBrand)filtered=filtered.filter(vc=>{
+    if(vc.vendorId)return(db.purchaseOrders||[]).some(po=>po.vendorId===vc.vendorId&&docAllowedForUser(po));
+    return true;
+  });
   if(search)filtered=filtered.filter(vc=>vc.creditNo.toLowerCase().includes(search)||(vc.refNo||'').toLowerCase().includes(search)||((db.vendors.find(v=>v.id===vc.vendorId)||{}).name||'').toLowerCase().includes(search));
   filtered=applySort(filtered,'vendor-credits',{date:vc=>vc.date,creditNo:vc=>vc.creditNo,refNo:vc=>vc.refNo||'',vendor:vc=>(db.vendors.find(v=>v.id===vc.vendorId)||{}).name||'',status:vc=>vc.status,amount:vc=>vc.amount,balance:vc=>vc.balance||0});
   let html=filtered.map(vc=>{const v=db.vendors.find(x=>x.id===vc.vendorId);return`<tr><td>${vc.date}</td><td>${vc.creditNo}</td><td>${vc.refNo||'-'}</td><td>${v?.name||'?'}</td><td>${badgeHtml(vc.status)}</td><td>${fmt(vc.amount)}</td><td>${fmt(vc.balance||0)}</td></tr>`;}).join('');
@@ -4769,8 +4836,8 @@ function renderCompositeItems(){
   const brandSel=document.getElementById('composite-brand-filter');
   if(brandSel)brandSel.innerHTML='<option value="">All Brands</option>'+[...brands].sort().map(b=>`<option ${b===brandFilter?'selected':''}>${b}</option>`).join('');
   const whSel=document.getElementById('composite-wh-filter');
-  if(whSel){const cur=whSel.value;whSel.innerHTML='<option value="">All Warehouses</option>'+(db.warehouses||[]).map(w=>`<option value="${w.id}"${String(w.id)===String(cur)?'selected':''}>${w.name}</option>`).join('');}
-  const whs=db.warehouses||[];
+  if(whSel){const cur=whSel.value;whSel.innerHTML='<option value="">All Warehouses</option>'+_activeWarehouses().map(w=>`<option value="${w.id}"${String(w.id)===String(cur)?'selected':''}>${w.name}</option>`).join('');}
+  const whs=_activeWarehouses();
   // Build thead
   const thead=document.getElementById('composite-items-thead');
   if(thead){
@@ -4895,7 +4962,10 @@ function renderMissingBOM(){
   const typeFilter=document.getElementById('missing-bom-type')?.value||'';
   const allItems=[...(db.items||[]),...(db.compositeItems||[])];
   // All composite items + kits that have no components or all-broken refs
+  // Exclude assembly components (Zoho packaging items like "250: Come Clean") and respect brand filter
   let data=(db.compositeItems||[]).filter(ci=>{
+    if(isAssemblyComponent(ci)) return false;        // skip packaging/manufacturing placeholders
+    if(!itemAllowedForUser(ci)) return false;         // respect active brand + user restrictions
     const comps=ci.components||[];
     if(comps.length===0)return true;
     // Also flag if ALL component references are broken (item no longer exists)
@@ -4934,8 +5004,8 @@ function renderProductMapping(){
   const search=(document.getElementById('pm-search')?.value||'').toLowerCase();
   const filter=document.getElementById('pm-filter')?.value||'all';
   const allItems=[
-    ...(db.items||[]).map(i=>({...i,_src:'items'})),
-    ...(db.compositeItems||[]).map(i=>({...i,_src:'compositeItems',_composite:true}))
+    ...(db.items||[]).filter(itemAllowedForUser).map(i=>({...i,_src:'items'})),
+    ...(db.compositeItems||[]).filter(itemAllowedForUser).map(i=>({...i,_src:'compositeItems',_composite:true}))
   ];
   const getShopifyMap=item=>{
     // skuMappings is the ONLY authoritative source — it stores both itemId AND src,
@@ -5416,6 +5486,13 @@ function closeBrandPicker(){
 // ── Brand select HTML (for item/composite item forms) ─────────────────────────
 // Returns a <select> restricted to what the current user can access.
 // Auto-selects if user is restricted to one brand; otherwise uses savedValue or _activeBrand.
+// Returns warehouses visible for the currently active brand
+function _activeWarehouses(){
+  const whs = db.warehouses || [];
+  if(!_activeBrand) return whs; // all brands → all warehouses
+  return whs.filter(w => !w.brand || _brandEq(w.brand, _activeBrand));
+}
+
 function _brandSelectHtml(elId, savedValue){
   const userBrands=currentUserBrands();
   const allBrands=(db.brands||[]).map(b=>b.name);
@@ -5472,6 +5549,8 @@ function setActiveBrand(name){
 // These MUST NOT appear on sales orders or be used in SKU auto-resolution.
 function isAssemblyComponent(item){
   if(!item)return false;
+  // Non-Hey Honey branded items are never internal assembly components
+  if(item.brand && item.brand!=='Hey Honey') return false;
   // Pattern: name starts with 1-4 digits followed by colon (e.g. "200:", "300:", "600:")
   if(/^\d{1,4}:/.test((item.name||'').trim())){return true;}
   // Also flag items whose SKU starts with packaging prefixes used in Zoho
@@ -6860,7 +6939,7 @@ function renderSavedMappings(){
   const tbody=document.getElementById('saved-mappings-table');
   const countEl=document.getElementById('saved-mappings-count');
   if(!tbody)return;
-  const allItems=[...db.items.map(i=>({...i,_src:'items'})),...(db.compositeItems||[]).map(i=>({...i,_src:'compositeItems'}))];
+  const allItems=[...db.items.filter(itemAllowedForUser).map(i=>({...i,_src:'items'})),...(db.compositeItems||[]).filter(itemAllowedForUser).map(i=>({...i,_src:'compositeItems'}))];
   const mappings=db.skuMappings||{};
   const q=(document.getElementById('saved-mappings-search')?.value||'').toLowerCase();
   let keys=Object.keys(mappings);
@@ -7065,13 +7144,23 @@ function completeAssembly(aoId){
   if(!components.length){showToast('No components defined — cannot complete assembly','warning');return;}
   const totalQty=parseFloat(ao.qty)||1;
   const whId=ao.warehouseId?String(ao.warehouseId):null;
+  // Helper: convert BOM component qty to item units (handles gram-based components)
+  function _bomDeductUnits(comp, cItem){
+    const rawQty=(parseFloat(comp.qty)||0);
+    if(comp.unit==='g'){
+      // comp.qty is in grams; convert to item units using item's unit field
+      const gramsPerUnit=_parseUnitToGrams(cItem.unit||'');
+      if(gramsPerUnit&&gramsPerUnit>0) return rawQty/gramsPerUnit;
+    }
+    return rawQty;
+  }
   // Pre-flight: check components that would go negative
   const negComps=[];
   components.forEach(comp=>{
-    const deductQty=(parseFloat(comp.qty)||0)*totalQty;
-    if(!deductQty)return;
     const cItem=resolveBOMItem(comp.itemId,comp.src);
     if(!cItem)return;
+    const deductQty=_bomDeductUnits(comp,cItem)*totalQty;
+    if(!deductQty)return;
     const currentStock=parseFloat(cItem.onHand)||0;
     if(currentStock-deductQty<0){
       negComps.push({item:cItem,current:currentStock,after:currentStock-deductQty,needed:deductQty});
@@ -7079,7 +7168,7 @@ function completeAssembly(aoId){
   });
   let assemblyApprovalReason=null;
   if(negComps.length){
-    const list=negComps.map(n=>`• ${n.item.name}: ${n.current} on hand, need ${n.needed} (would be ${n.after})`).join('\n');
+    const list=negComps.map(n=>`• ${n.item.name}: ${+(n.current).toFixed(4)} on hand, need ${+(n.needed).toFixed(4)} (would be ${+(n.after).toFixed(4)})`).join('\n');
     const pw=prompt(`⚠️ INSUFFICIENT STOCK\n\nThese components will go negative:\n${list}\n\nEnter admin password to override:`);
     if(!pw){showToast('Assembly cancelled — insufficient stock','warning');return;}
     if(pw!==APP_PASSWORD){alert('Incorrect password.');showToast('Assembly cancelled','warning');return;}
@@ -7090,13 +7179,13 @@ function completeAssembly(aoId){
   // Deduct each component from inventory (from the assembly warehouse)
   const log=[];
   components.forEach(comp=>{
-    const deductQty=(parseFloat(comp.qty)||0)*totalQty;
-    if(!deductQty)return;
     const cItem=resolveBOMItem(comp.itemId,comp.src);
-    if(cItem){
-      _deductItemStock(cItem,deductQty,whId,{type:'assembly',approvalReason:assemblyApprovalReason,reason:'Assembly: '+(ao.orderNo||'')});
-      log.push(`−${deductQty} × ${cItem.name}`);
-    }
+    if(!cItem)return;
+    const deductQty=_bomDeductUnits(comp,cItem)*totalQty;
+    if(!deductQty)return;
+    _deductItemStock(cItem,deductQty,whId,{type:'assembly',approvalReason:assemblyApprovalReason,reason:'Assembly: '+(ao.orderNo||'')});
+    const label=comp.unit==='g'?`−${comp.qty*totalQty}g (${+deductQty.toFixed(4)} units)`:`−${deductQty}`;
+    log.push(`${label} × ${cItem.name}`);
   });
   // Add finished composite item to inventory in assembly warehouse
   const addQty=totalQty;
@@ -7225,14 +7314,26 @@ function editLegacyKit(id){
 }
 
 function renderMoveOrders(){
-  let filtered=applySort(db.moveOrders,'move-orders',{moveNo:mo=>mo.moveNo,date:mo=>mo.date,fromLoc:mo=>mo.fromLoc||'',toLoc:mo=>mo.toLoc||'',itemName:mo=>mo.itemName||'',qty:mo=>mo.qty||0,status:mo=>mo.status});
+  let _moBase=db.moveOrders;
+  if(_activeBrand)_moBase=_moBase.filter(mo=>{
+    if(!mo.itemName)return true;
+    const it=(db.items||[]).find(i=>i.name===mo.itemName)||(db.compositeItems||[]).find(i=>i.name===mo.itemName);
+    return !it||_brandEq(it.brand||'Hey Honey',_activeBrand);
+  });
+  let filtered=applySort(_moBase,'move-orders',{moveNo:mo=>mo.moveNo,date:mo=>mo.date,fromLoc:mo=>mo.fromLoc||'',toLoc:mo=>mo.toLoc||'',itemName:mo=>mo.itemName||'',qty:mo=>mo.qty||0,status:mo=>mo.status});
   let html=filtered.map(mo=>`<tr><td>${mo.moveNo}</td><td>${mo.date}</td><td>${mo.fromLoc||'-'}</td><td>${mo.toLoc||'-'}</td><td>${mo.itemName||'-'}</td><td>${mo.qty||0}</td><td>${badgeHtml(mo.status)}</td></tr>`).join('');
   document.getElementById('move-orders-table').innerHTML=html||'<tr class="empty-row"><td colspan="7">No move orders</td></tr>';
   makeSortable('move-orders-table','move-orders',[{key:'moveNo'},{key:'date'},{key:'fromLoc'},{key:'toLoc'},{key:'itemName'},{key:'qty'},{key:'status'}],renderMoveOrders);
 }
 
 function renderPutaways(){
-  let filtered=applySort(db.putaways,'putaways',{putNo:p=>p.putNo,poRef:p=>p.poRef||'',warehouse:p=>p.warehouse||'',itemName:p=>p.itemName||'',qty:p=>p.qty||0,binLoc:p=>p.binLoc||'',status:p=>p.status});
+  let _paBase=db.putaways;
+  if(_activeBrand)_paBase=_paBase.filter(p=>{
+    if(p.poRef){const po=(db.purchaseOrders||[]).find(o=>o.poNo===p.poRef);if(po)return docAllowedForUser(po);}
+    if(p.itemName){const it=(db.items||[]).find(i=>i.name===p.itemName)||(db.compositeItems||[]).find(i=>i.name===p.itemName);if(it)return _brandEq(it.brand||'Hey Honey',_activeBrand);}
+    return true;
+  });
+  let filtered=applySort(_paBase,'putaways',{putNo:p=>p.putNo,poRef:p=>p.poRef||'',warehouse:p=>p.warehouse||'',itemName:p=>p.itemName||'',qty:p=>p.qty||0,binLoc:p=>p.binLoc||'',status:p=>p.status});
   let html=filtered.map(p=>`<tr><td>${p.putNo}</td><td>${p.poRef||'-'}</td><td>${p.warehouse||'-'}</td><td>${p.itemName||'-'}</td><td>${p.qty||0}</td><td>${p.binLoc||'-'}</td><td>${badgeHtml(p.status)}</td></tr>`).join('');
   document.getElementById('putaways-table').innerHTML=html||'<tr class="empty-row"><td colspan="7">No putaways</td></tr>';
   makeSortable('putaways-table','putaways',[{key:'putNo'},{key:'poRef'},{key:'warehouse'},{key:'itemName'},{key:'qty'},{key:'binLoc'},{key:'status'}],renderPutaways);
@@ -7244,6 +7345,12 @@ function renderReorderTasks(){
   const priority=document.getElementById('reorder-priority-filter')?.value||'';
   let tasks=db.reorderTasks||[];
   if(currentStatus&&currentStatus!=='All')tasks=tasks.filter(t=>t.status===currentStatus);
+  // Brand filter: look up the item by id to check its brand
+  if(_activeBrand)tasks=tasks.filter(t=>{
+    if(!t.itemId)return true;
+    const it=(db.items||[]).find(i=>String(i.id)===String(t.itemId))||(db.compositeItems||[]).find(i=>String(i.id)===String(t.itemId));
+    return !it||_brandEq(it.brand||'Hey Honey',_activeBrand);
+  });
   if(search)tasks=tasks.filter(t=>(t.itemName||'').toLowerCase().includes(search)||(t.sku||'').toLowerCase().includes(search)||(t.vendorName||'').toLowerCase().includes(search)||(t.assignee||'').toLowerCase().includes(search)||(t.taskNo||'').toLowerCase().includes(search));
   if(priority)tasks=tasks.filter(t=>t.priority===priority);
   const priorityColors={Low:'info',Medium:'warning',High:'danger',Critical:'danger'};
@@ -7267,7 +7374,7 @@ function renderReorderTasks(){
 
 function openReorderTaskModal(id){
   const t=id?db.reorderTasks.find(x=>x.id===id):null;
-  const itemOpts=[...(db.items||[]),...(db.compositeItems||[])].map(i=>`<option value="${i.id}|${i.sku||''}|${i.name}" ${t&&t.itemId===i.id?'selected':''}>${i.name} (${i.sku||'no SKU'})</option>`).join('');
+  const itemOpts=[...(db.items||[]),...(db.compositeItems||[])].filter(itemAllowedForUser).map(i=>`<option value="${i.id}|${i.sku||''}|${i.name}" ${t&&t.itemId===i.id?'selected':''}>${i.name} (${i.sku||'no SKU'})</option>`).join('');
   const vendorOpts=(db.vendors||[]).map(v=>`<option value="${v.id}|${v.name}" ${t&&t.vendorId===v.id?'selected':''}>${v.name}</option>`).join('');
   const statusOpts=['Open','In Progress','Snoozed','Done'].map(s=>`<option ${(t?.status||'Open')===s?'selected':''}>${s}</option>`).join('');
   const priorityOpts=['Low','Medium','High','Critical'].map(p=>`<option ${(t?.priority||'Medium')===p?'selected':''}>${p}</option>`).join('');
@@ -7360,7 +7467,7 @@ function renderBulkEditor(){
   const sel=document.getElementById('wsu-wh-sel');
   if(sel){
     const cur=sel.value;
-    sel.innerHTML='<option value="">— Select Warehouse —</option>'+(db.warehouses||[]).map(w=>`<option value="${w.id}"${String(w.id)===String(cur)?'selected':''}>${w.name}</option>`).join('');
+    sel.innerHTML='<option value="">— Select Warehouse —</option>'+_activeWarehouses().map(w=>`<option value="${w.id}"${String(w.id)===String(cur)?'selected':''}>${w.name}</option>`).join('');
     if(cur)renderWarehouseStockEditor();
   }
 }
@@ -7377,23 +7484,73 @@ function renderWarehouseStockEditor(){
   if(brandSel)brandSel.innerHTML='<option value="">All Brands</option>'+[...allBrands].sort().map(b=>`<option ${b===brandFilter?'selected':''}>${b}</option>`).join('');
   if(!whId){info.style.display='';wrap.style.display='none';return;}
   info.style.display='none';wrap.style.display='';
-  const allItems=[...(db.items||[]).map(i=>({...i,_src:'items'})),...(db.compositeItems||[]).map(i=>({...i,_src:'compositeItems'}))];
+  const allItems=[...(db.items||[]).map(i=>({...i,_src:'items'})),...(db.compositeItems||[]).map(i=>({...i,_src:'compositeItems'}))]
+    .filter(itemAllowedForUser); // respect active brand filter
   let filtered=allItems.filter(i=>i.status!=='Inactive');
   if(search)filtered=filtered.filter(i=>(i.sku||'').toLowerCase().includes(search)||i.name.toLowerCase().includes(search));
   if(brandFilter)filtered=filtered.filter(i=>!i.brand||_brandEq(i.brand,brandFilter));
   filtered.sort((a,b)=>a.name.localeCompare(b.name));
   document.getElementById('wsu-table').innerHTML=filtered.map(i=>{
     const cur=(i.warehouseStock||{})[whId]??0;
+    const isAristo=i.brand==='AristoSpice';
+    const gpUnit=isAristo?_parseUnitToGrams(i.unit||''):null;
+    const curWeight=gpUnit?+(cur*gpUnit).toFixed(1):null;
+    const weightCell=gpUnit?`
+      <div style="display:flex;align-items:center;gap:3px;margin-top:4px">
+        <input type="number" class="wsu-weight-inp" data-item-id="${i.id}" data-grams-per-unit="${gpUnit}"
+          min="0" step="any" value="${curWeight}"
+          style="width:80px;border:1px solid #a7f3d0;border-radius:6px;padding:4px 6px;font-size:12px;text-align:center;background:#f0fdf4"
+          oninput="wsuWeightChanged(this)"
+          title="Enter total weight in grams — auto-converts to units">
+        <span style="font-size:11px;color:#059669;font-weight:600">g</span>
+      </div>`:
+      `<div style="font-size:10px;color:#d1d5db;margin-top:2px">(no unit)</div>`;
+    const qtyCell=isAristo?`
+      <div style="display:flex;flex-direction:column;align-items:flex-start">
+        <div style="display:flex;align-items:center;gap:3px">
+          <input type="number" class="wsu-qty-inp" data-item-id="${i.id}" data-item-src="${i._src}" data-current="${cur}"
+            data-grams-per-unit="${gpUnit||''}" min="0" step="any" value="${cur}"
+            style="width:80px;border:1px solid var(--border);border-radius:6px;padding:4px 6px;font-size:13px;text-align:center"
+            oninput="wsuUnitChanged(this);this.style.background=parseFloat(this.value)!==${cur}?'#fffbeb':''">
+          <span style="font-size:11px;color:var(--text-light)">units</span>
+        </div>
+        ${weightCell}
+      </div>`:
+      `<input type="number" class="wsu-qty-inp" data-item-id="${i.id}" data-item-src="${i._src}" data-current="${cur}" min="0" step="any" value="${cur}" style="width:100px;border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:13px;text-align:center" oninput="this.style.background=parseFloat(this.value)!==${cur}?'#fffbeb':''">`;
     return`<tr>
       <td style="font-size:12px;color:var(--text-light)">${i.sku||'—'}</td>
-      <td style="font-size:13px">${i.name}</td>
+      <td style="font-size:13px">${i.name}${isAristo&&i.unit?`<span style="font-size:10px;color:#059669;margin-left:6px">${i.unit}/unit</span>`:''}${isAristo&&!gpUnit&&i.unit?`<span style="font-size:10px;color:#6b7280;margin-left:6px">${i.unit}</span>`:''}</td>
       <td style="font-size:12px;color:var(--text-light)">${i.category||'—'}</td>
       <td style="text-align:center;font-weight:600">${cur}</td>
-      <td><input type="number" class="wsu-qty-inp" data-item-id="${i.id}" data-item-src="${i._src}" data-current="${cur}" min="0" value="${cur}" style="width:100px;border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:13px;text-align:center" oninput="this.style.background=parseFloat(this.value)!==${cur}?'#fffbeb':''"></td>
+      <td>${qtyCell}</td>
     </tr>`;
   }).join('')||'<tr class="empty-row"><td colspan="5">No items found</td></tr>';
 }
 
+function wsuUnitChanged(unitInp){
+  const gpu=parseFloat(unitInp.dataset.gramsPerUnit)||0;
+  if(!gpu)return;
+  const units=parseFloat(unitInp.value)||0;
+  const row=unitInp.closest('tr');
+  const wInp=row?row.querySelector('.wsu-weight-inp'):null;
+  if(wInp){wInp.value=+(units*gpu).toFixed(1);wInp.style.background=units!=parseFloat(wInp.dataset.origWeight||0)?'#ecfdf5':'';}
+  const cur=parseFloat(unitInp.dataset.current)||0;
+  unitInp.style.background=units!==cur?'#fffbeb':'';
+}
+function wsuWeightChanged(wInp){
+  const gpu=parseFloat(wInp.dataset.gramsPerUnit)||0;
+  if(!gpu)return;
+  const grams=parseFloat(wInp.value)||0;
+  const units=Math.round((grams/gpu)*1000)/1000; // keep 3 decimals for fractional units
+  const row=wInp.closest('tr');
+  const uInp=row?row.querySelector('.wsu-qty-inp'):null;
+  if(uInp){
+    uInp.value=units;
+    const cur=parseFloat(uInp.dataset.current)||0;
+    uInp.style.background=units!==cur?'#fffbeb':'';
+  }
+  wInp.style.background=grams>0?'#ecfdf5':'';
+}
 function saveWarehouseStock(){
   const whId=parseInt(document.getElementById('wsu-wh-sel')?.value||'0');
   if(!whId){showToast('Select a warehouse first','warning');return;}
@@ -7558,8 +7715,8 @@ function processBulkFile(file){
 
 function buildBulkPreview(rows){
   const allItems=[
-    ...(db.items||[]).map(i=>({...i,_src:'items'})),
-    ...(db.compositeItems||[]).map(i=>({...i,_src:'compositeItems'}))
+    ...(db.items||[]).filter(itemAllowedForUser).map(i=>({...i,_src:'items'})),
+    ...(db.compositeItems||[]).filter(itemAllowedForUser).map(i=>({...i,_src:'compositeItems'}))
   ];
   const findItem=row=>{
     const sku=(row.sku||'').trim();
@@ -7714,7 +7871,7 @@ function showReport(name){
   document.getElementById('rpt-detail-title').textContent=name;
   let content='';
   if(name==='Inventory Summary'){
-    const rows=db.items.map(i=>`<tr><td>${i.name}</td><td>${i.sku}</td><td>${i.category}</td><td>${i.onHand}</td><td>${i.reorderPt}</td><td>${fmt(i.costPrice)}</td><td>${fmt(i.onHand*i.costPrice)}</td></tr>`).join('');
+    const rows=db.items.filter(itemAllowedForUser).map(i=>`<tr><td>${i.name}</td><td>${i.sku}</td><td>${i.category}</td><td>${i.onHand}</td><td>${i.reorderPt}</td><td>${fmt(i.costPrice)}</td><td>${fmt(i.onHand*i.costPrice)}</td></tr>`).join('');
     content=`<table><thead><tr><th>Item Name</th><th>SKU</th><th>Category</th><th>Qty on Hand</th><th>Reorder Pt</th><th>Cost Price</th><th>Stock Value</th></tr></thead><tbody>${rows}</tbody></table>`;
   } else if(name==='Sales by Customer'){
     const byCustomer={};db.salesOrders.forEach(o=>{const c=db.customers.find(x=>x.id===o.customerId)||{name:'—'};byCustomer[c.name]=(byCustomer[c.name]||0)+o.amount;});
@@ -7734,7 +7891,7 @@ function showReport(name){
     content=`<div style="background:#f8f9fb;border-radius:8px;padding:16px 24px;display:inline-block;margin-bottom:20px;text-align:center"><div style="font-size:11px;color:var(--text-light);text-transform:uppercase">Total Payable</div><div style="font-size:24px;font-weight:700;color:var(--primary)">${fmt(total)}</div></div>
     <table><thead><tr><th>Vendor</th><th>Bill#</th><th>Due Date</th><th>Amount</th><th>Balance Due</th><th>Status</th></tr></thead><tbody>${db.bills.map(b=>`<tr><td>${(db.vendors.find(v=>v.id===b.vendorId)||{name:'—'}).name}</td><td>${b.billNo}</td><td>${b.dueDate}</td><td>${fmt(b.amount)}</td><td>${fmt(b.balanceDue||0)}</td><td>${badgeHtml(b.status)}</td></tr>`).join('')}</tbody></table>`;
   } else if(name==='Inventory Valuation Summary'){
-    const rows=db.items.map(i=>`<tr><td>${i.name}</td><td>${i.sku}</td><td>${i.valuationMethod||'FIFO'}</td><td>${i.onHand}</td><td>${fmt(i.costPrice)}</td><td>${fmt(i.onHand*i.costPrice)}</td></tr>`).join('');
+    const rows=db.items.filter(itemAllowedForUser).map(i=>`<tr><td>${i.name}</td><td>${i.sku}</td><td>${i.valuationMethod||'FIFO'}</td><td>${i.onHand}</td><td>${fmt(i.costPrice)}</td><td>${fmt(i.onHand*i.costPrice)}</td></tr>`).join('');
     content=`<table><thead><tr><th>Item</th><th>SKU</th><th>Valuation</th><th>Qty</th><th>Unit Cost</th><th>Total Value</th></tr></thead><tbody>${rows}</tbody></table>`;
   } else if(name==='Purchase Order Details'){
     const rows=db.purchaseOrders.map(p=>`<tr><td>${p.date}</td><td>${p.poNo}</td><td>${(db.vendors.find(v=>v.id===p.vendorId)||{name:'—'}).name}</td><td>${p.deliveryDate||'—'}</td><td>${fmt(p.amount)}</td><td>${badgeHtml(p.status)}</td><td>${p.received}</td><td>${p.billed}</td></tr>`).join('');
@@ -8773,8 +8930,8 @@ function addCIRow(isService, returnEl, existingComp){
   tbody.appendChild(tr);
   if(!isService){
     const allItemOpts=[
-      ...(db.items||[]).map(i=>({v:`items:${i.id}`,l:`${i.name}${i.sku?' ('+i.sku+')':''}`})),
-      ...(db.compositeItems||[]).filter(i=>i.id!==_ciEditingId).map(i=>({v:`compositeItems:${i.id}`,l:`${i.name}${i.sku?' ('+i.sku+')':''} [CI]`}))
+      ...(db.items||[]).filter(itemAllowedForUser).map(i=>({v:`items:${i.id}`,l:`${i.name}${i.sku?' ('+i.sku+')':''}`})),
+      ...(db.compositeItems||[]).filter(itemAllowedForUser).filter(i=>i.id!==_ciEditingId).map(i=>({v:`compositeItems:${i.id}`,l:`${i.name}${i.sku?' ('+i.sku+')':''} [CI]`}))
     ];
     setTimeout(()=>{_ssInit(`ci-item-${n}`,allItemOpts,curV,curL,'Search item…',{});},30);
   }
@@ -9525,9 +9682,10 @@ function fpItemSearch(prefix,idx,forPurchase){
   const dd=document.getElementById(`${prefix}-item-dd-${idx}`);
   if(!inp||!dd)return;
   const q=(inp.value||'').toLowerCase().trim();
-  const allSellable=[...(db.items||[]).map(i=>({...i,_src:'items'})),...(db.compositeItems||[]).map(i=>({...i,_src:'compositeItems'}))];
+  const allSellable=[...(db.items||[]).map(i=>({...i,_src:'items'})),...(db.compositeItems||[]).map(i=>({...i,_src:'compositeItems'}))]
+    .filter(itemAllowedForUser); // restrict to active brand
   // Never show assembly/packaging components (200:, 300:, 600: prefix items) in sales order searches
-  const pool=forPurchase?(db.items||[]).map(i=>({...i,_src:'items'})):allSellable.filter(i=>i.sellable!==false&&!isAssemblyComponent(i));
+  const pool=forPurchase?(db.items||[]).filter(itemAllowedForUser).map(i=>({...i,_src:'items'})):allSellable.filter(i=>i.sellable!==false&&!isAssemblyComponent(i));
   let filtered=q?pool.filter(i=>(i.name||'').toLowerCase().includes(q)||(i.sku||'').toLowerCase().includes(q)):pool;
   if(!filtered.length){
     dd.innerHTML=`<div class="fp-srch-no-items">No products found for "<strong>${q}</strong>"</div>`;
@@ -9742,7 +9900,7 @@ function openSOPage(data){
   data=data||{};
   const isEdit=!!data.id;
   const custOpts=(db.customers||[]).map(c=>`<option value="${c.id}" ${String(c.id)===String(data.customerId||data.customer||'')?'selected':''}>${c.name}</option>`).join('');
-  const whOpts=(db.warehouses||[{name:'Main Warehouse'}]).map(w=>`<option value="${w.id||w.name}" ${(w.id||w.name)===(data.warehouseId||'')?'selected':''}>${w.name}</option>`).join('');
+  const whOpts=_activeWarehouses().map(w=>`<option value="${w.id||w.name}" ${(w.id||w.name)===(data.warehouseId||'')?'selected':''}>${w.name}</option>`).join('');
   const txnSeries=(db.txnSeries||[{name:'Default'}]).filter(s=>!s.module||s.module==='SO'||s.module==='All');
   const txnOpts=txnSeries.map(s=>`<option value="${s.prefix||s.name}">${s.name}</option>`).join('');
   const today=new Date().toISOString().slice(0,10);
@@ -10223,7 +10381,7 @@ function soShowAddCustomerModal(){
           <label class="form-label">Default Warehouse</label>
           <select class="form-input" id="nc-warehouse">
             <option value="">— use order default —</option>
-            ${(db.warehouses||[]).map(w=>`<option value="${w.id||w.name}">${w.name}</option>`).join('')}
+            ${_activeWarehouses().map(w=>`<option value="${w.id||w.name}">${w.name}</option>`).join('')}
           </select>
         </div>
       </div>
@@ -10563,7 +10721,7 @@ function billRemovePending(idx){
 // ── INVOICE FULL-PAGE ──
 function openInvoicePage(){
   const custOpts=(db.customers||[]).map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
-  const whOpts=(db.warehouses||[{name:'Main Warehouse'}]).map(w=>`<option value="${w.id||w.name}">${w.name}</option>`).join('');
+  const whOpts=_activeWarehouses().map(w=>`<option value="${w.id||w.name}">${w.name}</option>`).join('');
   const soOpts=(db.salesOrders||[]).filter(s=>s.status!=='void').map(s=>`<option value="${s.id}">${s.number}${s.customerName?' — '+s.customerName:''}</option>`).join('');
   const today=new Date().toISOString().slice(0,10);
   const invNum=`INV-${String((db.nextId?.invoices||100)).padStart(5,'0')}`;
@@ -10862,7 +11020,7 @@ function openPaymentReceivedModal(){
 // ── CREDIT NOTE FULL-PAGE ──
 function openCreditNotePage(){
   const custOpts=(db.customers||[]).map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
-  const whOpts=(db.warehouses||[{name:'Main Warehouse'}]).map(w=>`<option value="${w.id||w.name}">${w.name}</option>`).join('');
+  const whOpts=_activeWarehouses().map(w=>`<option value="${w.id||w.name}">${w.name}</option>`).join('');
   const today=new Date().toISOString().slice(0,10);
   const cnNum=`CN-${String((db.nextId?.creditNotes||100)).padStart(5,'0')}`;
   openFP(`
@@ -11104,7 +11262,7 @@ function addExpBulkRow(){
 // ── PURCHASE ORDER FULL-PAGE ──
 function openPOPage(){
   const vendorOpts=(db.vendors||[]).map(v=>`<option value="${v.id}">${v.name}</option>`).join('');
-  const whOpts=(db.warehouses||[{id:'wh1',name:'Main Warehouse',address:''}]).map(w=>`<option value="${w.id||w.name}">${w.name}</option>`).join('');
+  const whOpts=_activeWarehouses().map(w=>`<option value="${w.id||w.name}">${w.name}</option>`).join('');
   const custOpts=(db.customers||[]).map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
   const today=new Date().toISOString().slice(0,10);
   const poNum=`PO-${String((db.nextId?.purchaseOrders||100)).padStart(5,'0')}`;
@@ -11443,7 +11601,7 @@ function openPurchaseReceiveModal(){
     <div class="form-row"><label class="form-label">Receive# *</label><input class="form-input" id="prcv-number" value="RCV-${String(Date.now()).slice(-5)}"></div>
     <div class="form-row"><label class="form-label">Received Date *</label><input class="form-input" type="date" id="prcv-date" value="${new Date().toISOString().slice(0,10)}"></div>
     <div class="form-row"><label class="form-label">Warehouse</label>
-      <select class="form-input" id="prcv-warehouse">${(db.warehouses||[{name:'Main Warehouse'}]).map(w=>`<option>${w.name}</option>`).join('')}</select>
+      <select class="form-input" id="prcv-warehouse">${_activeWarehouses().map(w=>`<option>${w.name}</option>`).join('')}</select>
     </div>
     <div class="form-row"><label class="form-label">Notes</label><textarea class="form-input" id="prcv-notes" rows="2"></textarea></div>
   `,{
@@ -11471,7 +11629,7 @@ function openPurchaseReceiveModal(){
 // ── BILL FULL-PAGE ──
 function openBillPage(){
   const vendorOpts=(db.vendors||[]).map(v=>`<option value="${v.id}">${v.name}</option>`).join('');
-  const whOpts=(db.warehouses||[{name:'Main Warehouse'}]).map(w=>`<option value="${w.id||w.name}">${w.name}</option>`).join('');
+  const whOpts=_activeWarehouses().map(w=>`<option value="${w.id||w.name}">${w.name}</option>`).join('');
   const poOpts=(db.purchaseOrders||[]).filter(p=>p.status!=='void').map(p=>`<option value="${p.id}">${p.number}${p.vendorName?' — '+p.vendorName:''}</option>`).join('');
   const today=new Date().toISOString().slice(0,10);
   const billNum=`BILL-${String((db.nextId?.bills||100)).padStart(5,'0')}`;
@@ -11836,7 +11994,7 @@ function openPaymentMadeModal(){
 // ── VENDOR CREDIT FULL-PAGE ──
 function openVCPage(){
   const vendorOpts=(db.vendors||[]).map(v=>`<option value="${v.id}">${v.name}</option>`).join('');
-  const whOpts=(db.warehouses||[{name:'Main Warehouse'}]).map(w=>`<option value="${w.id||w.name}">${w.name}</option>`).join('');
+  const whOpts=_activeWarehouses().map(w=>`<option value="${w.id||w.name}">${w.name}</option>`).join('');
   const today=new Date().toISOString().slice(0,10);
   const vcNum=`VC-${String((db.nextId?.vendorCredits||100)).padStart(5,'0')}`;
   openFP(`
@@ -11964,7 +12122,7 @@ function saveVCPage(status='draft'){
 let _toRowSeq=0;
 
 function _toWhOpts(selId){
-  return (db.warehouses||[]).map(w=>`<option value="${w.id}" ${String(w.id)===String(selId)?'selected':''}>${w.name}</option>`).join('');
+  return _activeWarehouses().map(w=>`<option value="${w.id}" ${String(w.id)===String(selId)?'selected':''}>${w.name}</option>`).join('');
 }
 
 function openTransferForm(editId){
@@ -11973,7 +12131,7 @@ function openTransferForm(editId){
   const toNum=existing?.toNo||`TO-${String(Date.now()).slice(-5)}`;
   const whFrom=existing?.fromWarehouseId||'';
   const whTo=existing?.toWarehouseId||'';
-  const allItems=[...(db.items||[]),...(db.compositeItems||[])];
+  const allItems=[...(db.items||[]),...(db.compositeItems||[])].filter(itemAllowedForUser);
   _toRowSeq=0;
 
   const reasonOpts=['Warehouse Transfer — Movement Between Locations','Stock Replenishment','Customer Return','Vendor Return','Consolidation','Rebalancing Stock','Damage','Other']
@@ -12089,7 +12247,7 @@ function addTOFormRow(){
   _toRowSeq++;
   const n=_toRowSeq;
   const tbody=document.getElementById('tof-items-body');
-  const allItems=[...(db.items||[]),...(db.compositeItems||[])];
+  const allItems=[...(db.items||[]),...(db.compositeItems||[])].filter(itemAllowedForUser);
   const allItemOpts=allItems.map(i=>({v:String(i.id),l:`${i.name}${i.sku?' ('+i.sku+')':''}`}));
   const tr=document.createElement('tr');
   tr.id=`to-row-${n}`;
@@ -12361,7 +12519,7 @@ function voidTransfer(toId){
 
 // ── INVENTORY ADJUSTMENT MODAL ──
 function openAdjustmentModal(){
-  const warehouses=(db.warehouses||[{name:'Main Warehouse'}]).map(w=>`<option>${w.name}</option>`).join('');
+  const warehouses=_activeWarehouses().map(w=>`<option>${w.name}</option>`).join('');
   showModal('New Inventory Adjustment',`
     <div class="form-row"><label class="form-label">Reason *</label>
       <select class="form-input" id="adj-reason">
@@ -12458,14 +12616,23 @@ function addAdjRow(){
   adjRowCount++;
   const tbody=document.getElementById('adj-body');
   if(tbody.querySelector('td[colspan]'))tbody.innerHTML='';
-  const itemOpts=(db.items||[]).map(i=>`<option value="${i.id}" data-qty="${i.onHand||0}">${i.name} (${i.onHand||0})</option>`).join('');
+  const itemOpts=(db.items||[]).filter(itemAllowedForUser).map(i=>`<option value="${i.id}" data-qty="${i.onHand||0}" data-brand="${i.brand||''}" data-unit="${i.unit||''}">${i.name} (${i.onHand||0})</option>`).join('');
   const tr=document.createElement('tr');
   tr.id=`adj-row-${adjRowCount}`;
   tr.innerHTML=`
     <td><select onchange="adjSelectItem(this,${adjRowCount})" style="width:100%;border:1px solid #e5e7eb;border-radius:4px;padding:4px;font-size:12px">
       <option value="">Select Item</option>${itemOpts}</select></td>
     <td><span id="adj-curr-${adjRowCount}" style="font-size:12px">0</span></td>
-    <td><input type="number" id="adj-new-${adjRowCount}" value="0" onchange="adjCalcDiff(${adjRowCount})" style="width:70px;border:1px solid #e5e7eb;border-radius:4px;padding:4px;font-size:12px;text-align:right"></td>
+    <td>
+      <input type="number" id="adj-new-${adjRowCount}" value="0" onchange="adjCalcDiff(${adjRowCount})" style="width:70px;border:1px solid #e5e7eb;border-radius:4px;padding:4px;font-size:12px;text-align:right">
+      <div id="adj-weight-wrap-${adjRowCount}" style="display:none;margin-top:4px;display:none">
+        <div style="display:flex;align-items:center;gap:3px;margin-top:4px">
+          <input type="number" id="adj-weight-${adjRowCount}" min="0" step="any" placeholder="0" oninput="adjWeightChanged(${adjRowCount})"
+            style="width:70px;border:1px solid #a7f3d0;border-radius:4px;padding:4px;font-size:12px;text-align:right;background:#f0fdf4">
+          <span style="font-size:11px;color:#059669;font-weight:600">g</span>
+        </div>
+      </div>
+    </td>
     <td><span id="adj-diff-${adjRowCount}" style="font-size:12px;font-weight:600">0</span></td>
     <td><button class="tbl-del" onclick="document.getElementById('adj-row-${adjRowCount}').remove()">&#128465;</button></td>`;
   tbody.appendChild(tr);
@@ -12474,10 +12641,33 @@ function addAdjRow(){
 function adjSelectItem(sel,idx){
   const opt=sel.options[sel.selectedIndex];
   const qty=parseFloat(opt?.dataset.qty||0);
+  const brand=opt?.dataset.brand||'';
+  const unit=opt?.dataset.unit||'';
   const curr=document.getElementById(`adj-curr-${idx}`);
   const newQty=document.getElementById(`adj-new-${idx}`);
+  const weightWrap=document.getElementById(`adj-weight-wrap-${idx}`);
+  const weightInp=document.getElementById(`adj-weight-${idx}`);
   if(curr)curr.textContent=qty;
   if(newQty)newQty.value=qty;
+  // Show weight input for AristoSpice items with a parseable unit
+  const gpu=brand==='AristoSpice'?_parseUnitToGrams(unit):null;
+  if(weightWrap){weightWrap.style.display=gpu?'block':'none';}
+  if(weightInp){
+    weightInp.dataset.gramsPerUnit=gpu||'';
+    weightInp.value=gpu?+(qty*gpu).toFixed(1):'';
+  }
+  adjCalcDiff(idx);
+}
+
+function adjWeightChanged(idx){
+  const weightInp=document.getElementById(`adj-weight-${idx}`);
+  const newQtyInp=document.getElementById(`adj-new-${idx}`);
+  if(!weightInp||!newQtyInp)return;
+  const gpu=parseFloat(weightInp.dataset.gramsPerUnit)||0;
+  if(!gpu)return;
+  const grams=parseFloat(weightInp.value)||0;
+  const units=Math.round((grams/gpu)*1000)/1000;
+  newQtyInp.value=units;
   adjCalcDiff(idx);
 }
 
@@ -12486,6 +12676,12 @@ function adjCalcDiff(idx){
   const newQty=parseFloat(document.getElementById(`adj-new-${idx}`)?.value)||0;
   const diff=newQty-curr;
   const diffEl=document.getElementById(`adj-diff-${idx}`);
+  // Also sync weight field if it exists and wasn't the trigger
+  const weightInp=document.getElementById(`adj-weight-${idx}`);
+  if(weightInp&&weightInp.dataset.gramsPerUnit){
+    const gpu=parseFloat(weightInp.dataset.gramsPerUnit)||0;
+    if(gpu&&document.activeElement!==weightInp)weightInp.value=+(newQty*gpu).toFixed(1);
+  }
   if(diffEl){diffEl.textContent=(diff>=0?'+':'')+diff;diffEl.style.color=diff<0?'#ef4444':'#10b981';}
 }
 
@@ -12500,9 +12696,10 @@ function showNewAssemblyForm(editAoId){
   // Populate warehouse dropdown
   const whSel=document.getElementById('asm-f-wh');
   if(whSel){
-    whSel.innerHTML=(db.warehouses||[]).map(w=>`<option value="${w.id}">${w.name}</option>`).join('');
-    const usWh=(db.warehouses||[]).find(w=>(w.name||'').toLowerCase().includes('hey honey us'));
-    if(usWh)whSel.value=usWh.id;
+    const activeWhs=_activeWarehouses();
+    whSel.innerHTML=activeWhs.map(w=>`<option value="${w.id}">${w.name}</option>`).join('');
+    const defWh=_activeBrand?activeWhs[0]:(db.warehouses||[]).find(w=>(w.name||'').toLowerCase().includes('hey honey us'));
+    if(defWh)whSel.value=defWh.id;
   }
   function _asmFill(ao){
     const ci=ao?(db.compositeItems||[]).find(i=>String(i.id)===String(ao.compositeItemId)):null;
@@ -12584,7 +12781,13 @@ function _asmCiSearch(q){
   if(!inp)return;
   _asmBlurPending=false;
 
-  const allCI=(db.compositeItems||[]).filter(ci=>(ci.components||[]).length>0&&ci.status!=='Inactive');
+  // Filter: active brand + no assembly components (250:, 300: prefix items)
+  const allCI=(db.compositeItems||[]).filter(ci=>
+    (ci.components||[]).length>0 &&
+    ci.status!=='Inactive' &&
+    !isAssemblyComponent(ci) &&
+    itemAllowedForUser(ci)
+  );
   const sq=(q||'').toLowerCase().trim();
   const results=sq
     ?allCI.filter(ci=>ci.name.toLowerCase().includes(sq)||(ci.sku||'').toLowerCase().includes(sq))
@@ -12675,8 +12878,14 @@ function _asmRefreshBOM(){
   let canAssemble=Infinity;
   (ci.components||[]).forEach(c=>{
     const item=resolveBOMItem(c.itemId,c.src);
+    if(!item)return;
     const perUnit=parseFloat(c.qty)||0;
-    if(perUnit>0&&item)canAssemble=Math.min(canAssemble,Math.floor(getStock(item)/perUnit));
+    if(!perUnit)return;
+    // If BOM uses grams and item stores grams (unit='1g'), compare directly
+    // Otherwise convert grams to item units
+    const gpUnit=_parseUnitToGrams(item.unit||'');
+    const effectivePerUnit=(c.unit==='g'&&gpUnit&&gpUnit>1)?perUnit/gpUnit:perUnit;
+    canAssemble=Math.min(canAssemble,Math.floor(getStock(item)/effectivePerUnit));
   });
   if(canAssemble===Infinity)canAssemble=0;
   const whName=(db.warehouses||[]).find(w=>String(w.id)===whId)?.name||'selected warehouse';
@@ -12687,21 +12896,27 @@ function _asmRefreshBOM(){
   // BOM table rows
   const rows=(ci.components||[]).map(c=>{
     const item=resolveBOMItem(c.itemId,c.src);
+    const isGram=c.unit==='g';
+    const gpUnit=item?_parseUnitToGrams(item.unit||''):null;
+    // For gram-based BOM with gram-stored stock (gpUnit===1): compare directly in grams
+    // For gram-based BOM with unit-stored stock (gpUnit>1): convert to grams for display
+    const stockRaw=getStock(item);
+    const stockDisplay=(isGram&&gpUnit&&gpUnit>1)?Math.round(stockRaw*gpUnit):stockRaw;
     const perUnit=parseFloat(c.qty)||0;
     const totalNeeded=Math.round(perUnit*qty*100)/100;
-    const avail=getStock(item);
-    const short=avail<totalNeeded;
+    const short=stockDisplay<totalNeeded;
+    const unitLabel=isGram?'g':'';
     const statusBadge=short
-      ?`<span style="background:#fee2e2;color:#991b1b;border-radius:4px;padding:2px 7px;font-size:11px;font-weight:700">⚠ Short ${Math.round((totalNeeded-avail)*100)/100}</span>`
+      ?`<span style="background:#fee2e2;color:#991b1b;border-radius:4px;padding:2px 7px;font-size:11px;font-weight:700">⚠ Short ${Math.round((totalNeeded-stockDisplay)*100)/100}${unitLabel}</span>`
       :`<span style="background:#dcfce7;color:#166534;border-radius:4px;padding:2px 7px;font-size:11px;font-weight:700">✓ OK</span>`;
     return`<tr style="border-bottom:1px solid #f1f5f9;background:${short?'#fff5f5':''}">
       <td style="padding:10px 12px">
         <div style="font-weight:500;font-size:13px">${item?item.name:'<em style="color:#e53e3e">Unknown item</em>'}</div>
         <div style="font-size:11px;color:#9ca3af;margin-top:2px">SKU: ${item?.sku||'—'}</div>
       </td>
-      <td style="padding:10px 12px;text-align:center;font-size:13px">${perUnit}</td>
-      <td style="padding:10px 12px;text-align:center;font-size:13px;font-weight:600">${totalNeeded}</td>
-      <td style="padding:10px 12px;text-align:center;font-size:13px;font-weight:700;color:${short?'#e53e3e':'#16a34a'}">${avail}</td>
+      <td style="padding:10px 12px;text-align:center;font-size:13px">${perUnit}${unitLabel}</td>
+      <td style="padding:10px 12px;text-align:center;font-size:13px;font-weight:600">${totalNeeded}${unitLabel}</td>
+      <td style="padding:10px 12px;text-align:center;font-size:13px;font-weight:700;color:${short?'#e53e3e':'#16a34a'}">${stockDisplay}${unitLabel}</td>
       <td style="padding:10px 12px;text-align:center">${statusBadge}</td>
     </tr>`;
   }).join('');
@@ -12725,7 +12940,7 @@ function _asmFormSave(action){
     const qty=parseFloat(document.getElementById('asm-f-qty').value)||0;
     if(qty<1){showToast('Quantity must be at least 1','warning');document.getElementById('asm-f-qty').focus();return;}
     const whEl=document.getElementById('asm-f-wh');
-    const whId=whEl?whEl.value:'';
+    const whId=(whEl&&whEl.value)||(_activeWarehouses()[0]?.id||'');
     const batch=(document.getElementById('asm-f-batch').value||'').trim();
     const notes=(document.getElementById('asm-f-desc').value||'').trim();
     const editId=(document.getElementById('asm-new-view').dataset.editId||'').trim();
@@ -12822,7 +13037,7 @@ function _asmSave(fallbackNo){
 
 function _asmSearchItems(q){
   const dd=document.getElementById('asm-item-dropdown');if(!dd)return;
-  const allCI=(db.compositeItems||[]).filter(ci=>(ci.components||[]).length>0&&ci.status!=='Inactive');
+  const allCI=(db.compositeItems||[]).filter(itemAllowedForUser).filter(ci=>(ci.components||[]).length>0&&ci.status!=='Inactive');
   const sq=(q||'').toLowerCase().trim();
   const results=sq?allCI.filter(ci=>ci.name.toLowerCase().includes(sq)||(ci.sku||'').toLowerCase().includes(sq)):allCI.slice(0,50);
   if(!results.length){
@@ -12967,77 +13182,103 @@ function openMarkAssembledModal(aoId){
 }
 
 function _doMarkAssembled(aoId){
-  const ao=db.assemblyOrders.find(x=>x.id===aoId||String(x.id)===String(aoId));
-  if(!ao)return;
-  const assembledDate=document.getElementById('mk-date').value;
-  const assembledBy=(document.getElementById('mk-by').value||'').trim();
-  if(!assembledDate){showToast('Please enter the date assembled','warning');return;}
-  if(!assembledBy){showToast('Please enter who assembled this order','warning');return;}
-  const assembledQty=parseFloat(document.getElementById('mk-qty').value)||ao.qty;
+  try{
+  const ao=(db.assemblyOrders||[]).find(x=>x.id===aoId||String(x.id)===String(aoId));
+  if(!ao){showToast('Work order not found: '+aoId,'error');return;}
+  const assembledDate=document.getElementById('mk-date')?.value||new Date().toISOString().slice(0,10);
+  const assembledBy=(document.getElementById('mk-by')?.value||'').trim()||'—';
+  const assembledQty=parseFloat(document.getElementById('mk-qty')?.value)||ao.qty||1;
   closeModal();
-  // Now run the inventory movement (same logic as completeAssembly)
   ao.qty=assembledQty;
   completeAssemblyInventory(ao,assembledDate,assembledBy);
+  }catch(e){console.error('_doMarkAssembled error:',e);showToast('Error: '+e.message,'error');}
+}
+
+// Global helper: gram-aware BOM deduction amount (returns units to deduct from stock)
+function _bomCompDeductQty(comp,cItem){
+  const rawQty=parseFloat(comp.qty)||0;
+  if(comp.unit==='g'){
+    const gpUnit=_parseUnitToGrams(cItem.unit||'');
+    if(gpUnit&&gpUnit>0)return rawQty/gpUnit;
+  }
+  return rawQty;
+}
+
+// Global pending assembly state for override modal
+let _pendingAssemblyCtx=null;
+
+function _executePendingAssembly(approvalReason){
+  const ctx=_pendingAssemblyCtx;
+  if(!ctx){showToast('No pending assembly','error');return;}
+  _pendingAssemblyCtx=null;
+  const{ci,components,totalQty,whId,ao,assembledDate,assembledBy}=ctx;
+  components.forEach(comp=>{
+    const cItem=resolveBOMItem(comp.itemId,comp.src);
+    if(!cItem)return;
+    const dq=_bomCompDeductQty(comp,cItem)*totalQty;
+    if(!dq)return;
+    _deductItemStock(cItem,dq,whId,{type:'assembly',approvalReason,reason:'Assembly: '+ao.orderNo});
+  });
+  const _old=parseFloat(ci.onHand)||0;
+  ci.onHand=_old+totalQty;
+  if(whId){if(!ci.warehouseStock)ci.warehouseStock={};ci.warehouseStock[whId]=(parseFloat(ci.warehouseStock[whId])||0)+totalQty;}
+  addAuditEntry(ci,_old,ci.onHand,'Assembly: '+ao.orderNo,'assembly',whId,[]);
+  ao.status='Assembled';ao.manufacturedQty=totalQty;
+  ao.cost=Math.round(calcAssemblyCost(ci)*totalQty*100)/100;
+  ao.assembledDate=assembledDate;ao.assembledBy=assembledBy;
+  ao.completedAt=new Date().toISOString();
+  const nc=Math.round(calcAssemblyCost(ci)*100)/100;
+  if(nc>0)ci.costPrice=nc;
+  saveDB();recalcDerivedCosts();renderCurrentView();
+  showToast('✓ Assembly '+ao.orderNo+' marked assembled — inventory updated');
 }
 
 function completeAssemblyInventory(ao,assembledDate,assembledBy){
+  try{
   const ci=(db.compositeItems||[]).find(i=>String(i.id)===String(ao.compositeItemId));
-  if(!ci){
-    // Legacy bomId fallback
-    completeAssembly(ao.id);return;
-  }
+  if(!ci){completeAssembly(ao.id);return;}
   const components=ci.components||[];
   if(!components.length){showToast('No components defined — cannot complete assembly','warning');return;}
   const totalQty=parseFloat(ao.qty)||1;
-  const whId=ao.warehouseId?String(ao.warehouseId):null;
-  // Pre-flight: check components that would go negative
+  const whId=ao.warehouseId?String(ao.warehouseId):((_activeWarehouses()[0]?.id&&String(_activeWarehouses()[0].id))||null);
+  // Check for shortfalls
   const negComps=[];
   components.forEach(comp=>{
-    const deductQty=(parseFloat(comp.qty)||0)*totalQty;
-    if(!deductQty)return;
     const cItem=resolveBOMItem(comp.itemId,comp.src);
-    if(cItem&&(parseFloat(cItem.onHand)||0)-deductQty<0){
-      negComps.push({item:cItem,current:parseFloat(cItem.onHand)||0,after:(parseFloat(cItem.onHand)||0)-deductQty,needed:deductQty});
-    }
+    if(!cItem)return;
+    const dq=_bomCompDeductQty(comp,cItem)*totalQty;
+    if(!dq)return;
+    const cur=parseFloat(cItem.onHand)||0;
+    if(cur-dq<0)negComps.push({name:cItem.name,cur,need:dq,unit:comp.unit==='g'?'g':''});
   });
-  let approvalReason=null;
-  if(negComps.length){
-    const list=negComps.map(n=>`• ${n.item.name}: ${n.current} on hand, need ${n.needed}`).join('\n');
-    const pw=prompt(`⚠️ INSUFFICIENT STOCK\n\n${list}\n\nEnter admin password to override and proceed:`);
-    if(!pw){showToast('Assembly cancelled — insufficient stock','warning');return;}
-    if(pw!==APP_PASSWORD){alert('Incorrect password.');return;}
-    const r=prompt('Reason for proceeding with insufficient stock (required):');
-    if(!r||!r.trim()){alert('Reason required.');return;}
-    approvalReason=r.trim();
+  // Store context globally so override modal can call _executePendingAssembly
+  _pendingAssemblyCtx={ci,components,totalQty,whId,ao,assembledDate,assembledBy};
+  if(!negComps.length){
+    _executePendingAssembly(null);
+  } else {
+    const shortList=negComps.map(n=>`<li style="margin-bottom:4px"><strong>${n.name}</strong>: have <span style="color:#16a34a;font-weight:700">${+n.cur.toFixed(1)}${n.unit}</span>, need <span style="color:#e53e3e;font-weight:700">${+n.need.toFixed(1)}${n.unit}</span></li>`).join('');
+    openModal('⚠️ Insufficient Stock — '+ao.orderNo,`
+      <p style="font-size:13px;color:#6b7280;margin:0 0 12px">These components are short:</p>
+      <ul style="font-size:13px;margin:0 0 16px;padding-left:16px">${shortList}</ul>
+      <div class="form-row"><label class="form-label">Admin Password</label>
+        <input class="form-input" type="password" id="neg-pw" placeholder="Password" style="max-width:220px">
+      </div>
+      <div class="form-row"><label class="form-label">Reason *</label>
+        <input class="form-input" id="neg-reason" placeholder="Why proceed with insufficient stock?">
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;padding-top:12px;border-top:1px solid #e2e6ea">
+        <button class="btn-secondary" onclick="closeModal();_pendingAssemblyCtx=null;showToast('Assembly cancelled','warning')">Cancel</button>
+        <button class="btn-primary" style="background:#dc2626;border-color:#dc2626" onclick="
+          var pw=document.getElementById('neg-pw').value;
+          var rsn=(document.getElementById('neg-reason').value||'').trim();
+          if(pw!==APP_PASSWORD){showToast('Incorrect password','error');return;}
+          if(!rsn){showToast('Reason required','warning');return;}
+          closeModal();_executePendingAssembly(rsn);
+        ">Override &amp; Proceed</button>
+      </div>
+    `,'540px');
   }
-  // Deduct each component
-  components.forEach(comp=>{
-    const deductQty=(parseFloat(comp.qty)||0)*totalQty;
-    if(!deductQty)return;
-    const cItem=resolveBOMItem(comp.itemId,comp.src);
-    if(cItem)_deductItemStock(cItem,deductQty,whId,{type:'assembly',approvalReason,reason:'Assembly: '+ao.orderNo});
-  });
-  // Add finished composite item to the assembly warehouse
-  const _oldCiQty=parseFloat(ci.onHand)||0;
-  ci.onHand=_oldCiQty+totalQty;
-  if(whId){
-    if(!ci.warehouseStock)ci.warehouseStock={};
-    ci.warehouseStock[whId]=(parseFloat(ci.warehouseStock[whId])||0)+totalQty;
-  }
-  // Record finished-goods addition in audit log so it shows in Inventory History
-  addAuditEntry(ci,_oldCiQty,ci.onHand,'Assembly: '+ao.orderNo,'assembly',whId,[]);
-  // Update assembly order record
-  ao.status='Assembled';
-  ao.manufacturedQty=totalQty;
-  ao.cost=Math.round(calcAssemblyCost(ci)*totalQty*100)/100;
-  ao.assembledDate=assembledDate;
-  ao.assembledBy=assembledBy;
-  ao.completedAt=new Date().toISOString();
-  // Update cost price
-  const newCost=Math.round(calcAssemblyCost(ci)*100)/100;
-  if(newCost>0)ci.costPrice=newCost;
-  saveDB();recalcDerivedCosts();renderCurrentView();
-  showToast(`✓ Assembly ${ao.orderNo} marked assembled by ${assembledBy} — inventory updated`);
+  }catch(e){console.error('completeAssemblyInventory error:',e);showToast('Assembly error: '+e.message,'error');}
 }
 
 // ── BILL OF MATERIALS MODAL ──
@@ -13046,7 +13287,7 @@ function openBOMModal(){
     <div class="form-row"><label class="form-label">BOM Name *</label><input class="form-input" id="bom-name" placeholder="Finished Product Name"></div>
     <div class="form-row"><label class="form-label">Item *</label>
       <select class="form-input" id="bom-item"><option value="">-- Select Finished Item --</option>
-        ${(db.items||[]).map(i=>`<option value="${i.id}">${i.name}</option>`).join('')}
+        ${(db.items||[]).filter(itemAllowedForUser).map(i=>`<option value="${i.id}">${i.name}</option>`).join('')}
       </select>
     </div>
     <div class="form-row"><label class="form-label">Quantity</label><input class="form-input" type="number" id="bom-qty" value="1" min="1"></div>
@@ -13073,7 +13314,7 @@ function addBOMComp(){
   bomCompCount++;
   const tbody=document.getElementById('bom-comp-body');
   if(tbody.querySelector('td[colspan]'))tbody.innerHTML='';
-  const itemOpts=(db.items||[]).map(i=>`<option value="${i.id}">${i.name}</option>`).join('');
+  const itemOpts=(db.items||[]).filter(itemAllowedForUser).map(i=>`<option value="${i.id}">${i.name}</option>`).join('');
   const tr=document.createElement('tr');
   tr.id=`bom-comp-${bomCompCount}`;
   tr.innerHTML=`
@@ -13126,7 +13367,7 @@ function addKitRow(){
   kitRowCount++;
   const tbody=document.getElementById('kit-body');
   if(tbody.querySelector('td[colspan]'))tbody.innerHTML='';
-  const itemOpts=(db.items||[]).map(i=>`<option value="${i.id}" data-cost="${i.costPrice||0}">${i.name}</option>`).join('');
+  const itemOpts=(db.items||[]).filter(itemAllowedForUser).map(i=>`<option value="${i.id}" data-cost="${i.costPrice||0}">${i.name}</option>`).join('');
   const tr=document.createElement('tr');
   tr.id=`kit-row-${kitRowCount}`;
   tr.innerHTML=`
@@ -13255,7 +13496,7 @@ function openShipmentModal(){
 
 // ── MOVE ORDERS MODAL ──
 function openMoveOrderModal(){
-  const warehouses=(db.warehouses||[{name:'Main Warehouse'}]).map(w=>`<option>${w.name}</option>`).join('');
+  const warehouses=_activeWarehouses().map(w=>`<option>${w.name}</option>`).join('');
   showModal('New Move Order',`
     <div class="form-row"><label class="form-label">Move Order# *</label><input class="form-input" id="mo-number" value="MO-${String(Date.now()).slice(-5)}"></div>
     <div class="form-row"><label class="form-label">Date *</label><input class="form-input" type="date" id="mo-date" value="${new Date().toISOString().slice(0,10)}"></div>
@@ -13290,7 +13531,7 @@ function addMORow(){
   moRowCount++;
   const tbody=document.getElementById('mo-body');
   if(tbody.querySelector('td[colspan]'))tbody.innerHTML='';
-  const itemOpts=(db.items||[]).map(i=>`<option value="${i.id}">${i.name}</option>`).join('');
+  const itemOpts=(db.items||[]).filter(itemAllowedForUser).map(i=>`<option value="${i.id}">${i.name}</option>`).join('');
   const tr=document.createElement('tr');
   tr.id=`mo-row-${moRowCount}`;
   tr.innerHTML=`
@@ -13302,7 +13543,7 @@ function addMORow(){
 
 // ── PUTAWAY MODAL ──
 function openPutawayModal(){
-  const warehouses=(db.warehouses||[{name:'Main Warehouse'}]).map(w=>`<option>${w.name}</option>`).join('');
+  const warehouses=_activeWarehouses().map(w=>`<option>${w.name}</option>`).join('');
   showModal('New Putaway',`
     <div class="form-row"><label class="form-label">Putaway# *</label><input class="form-input" id="pa-number" value="PA-${String(Date.now()).slice(-5)}"></div>
     <div class="form-row"><label class="form-label">Date *</label><input class="form-input" type="date" id="pa-date" value="${new Date().toISOString().slice(0,10)}"></div>
@@ -13342,7 +13583,7 @@ function addPARow(){
   paRowCount++;
   const tbody=document.getElementById('pa-body');
   if(tbody.querySelector('td[colspan]'))tbody.innerHTML='';
-  const itemOpts=(db.items||[]).map(i=>`<option value="${i.id}">${i.name}</option>`).join('');
+  const itemOpts=(db.items||[]).filter(itemAllowedForUser).map(i=>`<option value="${i.id}">${i.name}</option>`).join('');
   const tr=document.createElement('tr');
   tr.id=`pa-row-${paRowCount}`;
   tr.innerHTML=`
@@ -13358,8 +13599,8 @@ function addPARow(){
 
 // ── LINE ITEM HELPERS ──
 let soLineCount=1,poLineCount=1,invLineCount=1,billLineCount=1;
-const itemOpts=()=>db.items.filter(i=>i.sellable!==false).map(i=>`<option value="${i.id}" data-price="${i.salePrice}">${i.name} [${i.sku}]</option>`).join('');
-const purchItemOpts=()=>db.items.filter(i=>i.purchasable!==false).map(i=>`<option value="${i.id}" data-cost="${i.costPrice}">${i.name} [${i.sku}]</option>`).join('');
+const itemOpts=()=>db.items.filter(itemAllowedForUser).filter(i=>i.sellable!==false).map(i=>`<option value="${i.id}" data-price="${i.salePrice}">${i.name} [${i.sku}]</option>`).join('');
+const purchItemOpts=()=>db.items.filter(itemAllowedForUser).filter(i=>i.purchasable!==false).map(i=>`<option value="${i.id}" data-cost="${i.costPrice}">${i.name} [${i.sku}]</option>`).join('');
 
 function soRecalcTotal(){
   let sub=0,disc=0;
@@ -13675,8 +13916,18 @@ function showCompositeDetail(id){
     const comp=resolveBOMItem(c.itemId,c.src);
     const name=comp?comp.name:`Item #${c.itemId}`;
     const sku=comp?comp.sku||'':'';
-    const unitCost=comp?parseFloat(comp.costPrice)||0:0;
-    return`<tr><td style="padding:6px 8px;font-size:12px">${name}</td><td style="padding:6px 8px;font-size:12px;color:var(--text-light)">${sku}</td><td style="padding:6px 8px;font-size:12px;text-align:center;font-weight:600">${c.qty}</td><td style="padding:6px 8px;font-size:12px;text-align:right;color:var(--text-light)">${fmt(unitCost)}</td><td style="padding:6px 8px;font-size:12px;text-align:right;font-weight:600">${fmt(unitCost*c.qty)}</td></tr>`;
+    const useGrams=c.unit==='g';
+    let unitCostDisplay,lineTotal,qtyDisplay;
+    if(useGrams&&comp){
+      const cpg=_costPerGram(comp);
+      qtyDisplay=c.qty+'g';
+      if(cpg!=null){unitCostDisplay='$'+cpg.toFixed(4)+'/g';lineTotal=cpg*c.qty;}
+      else{unitCostDisplay=fmt(comp.costPrice||0);lineTotal=(comp.costPrice||0)*c.qty;}
+    } else {
+      const unitCost=comp?parseFloat(comp.costPrice)||0:0;
+      qtyDisplay=c.qty;unitCostDisplay=fmt(unitCost);lineTotal=unitCost*c.qty;
+    }
+    return`<tr><td style="padding:6px 8px;font-size:12px">${name}</td><td style="padding:6px 8px;font-size:12px;color:var(--text-light)">${sku}</td><td style="padding:6px 8px;font-size:12px;text-align:center;font-weight:600">${qtyDisplay}</td><td style="padding:6px 8px;font-size:12px;text-align:right;color:var(--text-light)">${unitCostDisplay}</td><td style="padding:6px 8px;font-size:12px;text-align:right;font-weight:600">${fmt(lineTotal)}</td></tr>`;
   }).join('');
   const totalBomCost=calcAssemblyCost(ci);
   const roundedBomCost=Math.round(totalBomCost*100)/100;if(ci.costPrice!==roundedBomCost){ci.costPrice=roundedBomCost;saveDB();}
@@ -13726,10 +13977,22 @@ ${auditLogItemHtml(ci.id)}`;
   openDetailPanel(ci.name,body,`<button class="btn btn-outline btn-sm" onclick="closeDetailPanel()">Close</button><button class="btn btn-outline btn-sm" style="color:#7c3aed;border-color:#7c3aed" onclick="editCompositeBOM(${id})">✏️ Edit BOM</button><button class="btn btn-outline btn-sm" style="color:#e07b00;border-color:#e07b00" onclick="closeDetailPanel();_asmNewForCI(${id})">📋 Create Assembly</button><button class="btn btn-outline btn-sm" style="${ci.status==='Inactive'?'color:var(--success);border-color:var(--success)':'color:#6b7280;border-color:#6b7280'}" onclick="toggleRecordStatus(${id},'compositeItems')">${ciStatusLbl}</button><button class="btn btn-primary btn-sm" onclick="closeDetailPanel();openCompositePanel(${id})">Edit Item</button>`);
 }
 
-let _bomEditId=null;let _bomEditFromItems=false;
+let _bomEditId=null;let _bomEditFromItems=false;let _bomIsAristoSpice=false;
+
+function _parseUnitToGrams(unitStr){
+  const s=(unitStr||'').toLowerCase().trim();
+  const kg=s.match(/([0-9.]+)\s*kg/);if(kg)return parseFloat(kg[1])*1000;
+  const g=s.match(/([0-9.]+)\s*g/);if(g)return parseFloat(g[1]);
+  return null;
+}
+function _costPerGram(item){
+  const grams=_parseUnitToGrams(item?item.unit||'':'');
+  if(!grams||grams<=0)return null;
+  return (item.costPrice||0)/grams;
+}
 
 function _bomItemOpts(excludeId){
-  return [...(db.items||[]).map(i=>({...i,_src:'items'})),...(db.compositeItems||[]).filter(i=>i.id!==excludeId).map(i=>({...i,_src:'compositeItems'}))];
+  return [...(db.items||[]).filter(itemAllowedForUser).map(i=>({...i,_src:'items'})),...(db.compositeItems||[]).filter(i=>i.id!==excludeId).filter(itemAllowedForUser).map(i=>({...i,_src:'compositeItems'}))];
 }
 
 function editCompositeBOM(id){
@@ -13739,12 +14002,15 @@ function editCompositeBOM(id){
   if(!ci){ci=(db.items||[]).find(i=>i.id===id);_bomFromItems=!!ci;}
   if(!ci)return;
   _bomEditId=id;_bomEditFromItems=_bomFromItems;
+  _bomIsAristoSpice=(ci.brand==='AristoSpice');
+  const _bomGrid=_bomIsAristoSpice?'1fr 55px 50px 90px 90px 32px':'1fr 70px 90px 90px 32px';
+  const _bomHdrQty=_bomIsAristoSpice?'<div style="font-size:11px;font-weight:700;color:#7c3aed;text-transform:uppercase;letter-spacing:.4px;text-align:center">Qty</div><div style="font-size:11px;font-weight:700;color:#7c3aed;text-transform:uppercase;letter-spacing:.4px;text-align:center">Unit</div>':'<div style="font-size:11px;font-weight:700;color:#7c3aed;text-transform:uppercase;letter-spacing:.4px;text-align:center">Qty</div>';
   showModal(`Edit BOM — ${ci.name}`,`
-<div style="margin-bottom:14px;font-size:12px;color:var(--text-light)">Search and add components. Each component consumes stock when an assembly order is built.</div>
+<div style="margin-bottom:14px;font-size:12px;color:var(--text-light)">Search and add components.${_bomIsAristoSpice?' Use <strong>g</strong> unit to enter quantities in grams — cost auto-calculated from item kg price.':' Each component consumes stock when an assembly order is built.'}</div>
 <div style="border:1px solid var(--border);border-radius:8px;overflow:visible">
-  <div style="display:grid;grid-template-columns:1fr 70px 90px 90px 32px;gap:0;padding:8px 12px;background:#f5f3ff;border-radius:8px 8px 0 0;border-bottom:1px solid #e9d5ff">
+  <div style="display:grid;grid-template-columns:${_bomGrid};gap:0;padding:8px 12px;background:#f5f3ff;border-radius:8px 8px 0 0;border-bottom:1px solid #e9d5ff">
     <div style="font-size:11px;font-weight:700;color:#7c3aed;text-transform:uppercase;letter-spacing:.4px">Component</div>
-    <div style="font-size:11px;font-weight:700;color:#7c3aed;text-transform:uppercase;letter-spacing:.4px;text-align:center">Qty</div>
+    ${_bomHdrQty}
     <div style="font-size:11px;font-weight:700;color:#7c3aed;text-transform:uppercase;letter-spacing:.4px;text-align:right">Unit Cost</div>
     <div style="font-size:11px;font-weight:700;color:#7c3aed;text-transform:uppercase;letter-spacing:.4px;text-align:right">Line Total</div>
     <div></div>
@@ -13764,7 +14030,9 @@ function editCompositeBOM(id){
       const qty=parseFloat(row.querySelector('input[type="number"]')?.value)||1;
       const itemId=hidden?.dataset.bomItemId;
       const src=hidden?.dataset.bomItemSrc||'items';
-      if(itemId)newComponents.push({itemId:parseInt(itemId)||itemId,qty,src});
+      const unitSel=row.querySelector('select[data-bom-unit]');
+      const unit=unitSel?unitSel.value:'qty';
+      if(itemId)newComponents.push({itemId:parseInt(itemId)||itemId,qty,src,...(unit==='g'?{unit:'g'}:{})});
     });
     // items-based virtual kits store components in kitComponents; compositeItems use components
     if(_bomEditFromItems){ci2.kitComponents=newComponents;}
@@ -13794,7 +14062,8 @@ function addBOMRow(existingComponent){
   const allItems=_bomItemOpts(_bomEditId);
 
   const tr=document.createElement('div');
-  tr.style.cssText='display:grid;grid-template-columns:1fr 70px 90px 90px 32px;gap:0;align-items:center;border-bottom:1px solid #f3f4f6;padding:8px 12px;min-height:52px';
+  const _grid=_bomIsAristoSpice?'1fr 55px 50px 90px 90px 32px':'1fr 70px 90px 90px 32px';
+  tr.style.cssText=`display:grid;grid-template-columns:${_grid};gap:0;align-items:center;border-bottom:1px solid #f3f4f6;padding:8px 12px;min-height:52px`;
   tr.dataset.bomRow='1';
 
   // ── Item search cell ──
@@ -13952,15 +14221,28 @@ function addBOMRow(existingComponent){
   const td2=document.createElement('div');td2.style.cssText='display:flex;justify-content:center;align-items:center';
   const qtyInp=document.createElement('input');
   qtyInp.type='number';qtyInp.className='form-input';
-  qtyInp.style.cssText='font-size:13px;width:58px;text-align:center;padding:5px 4px';
+  qtyInp.style.cssText='font-size:13px;width:50px;text-align:center;padding:5px 4px';
   qtyInp.min='0.001';qtyInp.step='any';
   qtyInp.value=existingComponent?existingComponent.qty:1;
   qtyInp.oninput=refreshRow;
   td2.appendChild(qtyInp);
 
+  // ── Unit selector cell (AristoSpice only) ──
+  let unitSel=null;
+  const td2b=document.createElement('div');td2b.style.cssText='display:flex;justify-content:center;align-items:center';
+  if(_bomIsAristoSpice){
+    unitSel=document.createElement('select');
+    unitSel.dataset.bomUnit='1';
+    unitSel.style.cssText='font-size:11px;border:1px solid #d1d5db;border-radius:5px;padding:3px 2px;background:#fff;width:46px;text-align:center;cursor:pointer';
+    unitSel.innerHTML='<option value="qty">qty</option><option value="g">g</option>';
+    if(existingComponent&&existingComponent.unit==='g')unitSel.value='g';
+    unitSel.onchange=refreshRow;
+    td2b.appendChild(unitSel);
+  }
+
   // ── Unit cost cell ──
   const td3=document.createElement('div');
-  td3.style.cssText='text-align:right;font-size:13px;color:var(--text-light);white-space:nowrap;padding-right:4px';
+  td3.style.cssText='text-align:right;font-size:12px;color:var(--text-light);white-space:nowrap;padding-right:4px';
   td3.textContent='$'+currentUnitCost.toFixed(2);
 
   // ── Line total cell ──
@@ -13973,12 +14255,28 @@ function addBOMRow(existingComponent){
     const id=hidden.dataset.bomItemId;
     const src=hidden.dataset.bomItemSrc||'items';
     const item=id?(allItems.find(i=>String(i.id)===String(id)&&i._src===src)||allItems.find(i=>String(i.id)===String(id))):null;
-    const cost=item?(item.costPrice||0):currentUnitCost;
     const qty=parseFloat(qtyInp.value)||0;
-    const line=cost*qty;
-    td3.textContent='$'+cost.toFixed(2);
-    td4.textContent='$'+line.toFixed(2);
-    td4.dataset.bomLineTotal=line;
+    const useGrams=unitSel&&unitSel.value==='g';
+    let displayCost,lineCost;
+    if(useGrams&&item){
+      const cpg=_costPerGram(item);
+      if(cpg!=null){
+        displayCost=cpg;
+        lineCost=cpg*qty;
+        td3.textContent='$'+cpg.toFixed(4)+'/g';
+      } else {
+        // fallback: no unit on item, use cost as-is
+        displayCost=item.costPrice||0;
+        lineCost=displayCost*qty;
+        td3.textContent='$'+(displayCost).toFixed(2)+' ⚠️';
+      }
+    } else {
+      displayCost=item?(item.costPrice||0):currentUnitCost;
+      lineCost=displayCost*qty;
+      td3.textContent='$'+displayCost.toFixed(2);
+    }
+    td4.textContent='$'+lineCost.toFixed(2);
+    td4.dataset.bomLineTotal=lineCost;
     bomUpdateTotal();
   }
   refreshRow();
@@ -13990,7 +14288,8 @@ function addBOMRow(existingComponent){
   rmBtn.onclick=()=>{tr.remove();bomUpdateTotal();};
   td5.appendChild(rmBtn);
 
-  tr.append(td1,td2,td3,td4,td5);
+  if(_bomIsAristoSpice)tr.append(td1,td2,td2b,td3,td4,td5);
+  else tr.append(td1,td2,td3,td4,td5);
   tbody.appendChild(tr);
   bomUpdateTotal();
   return tr;
@@ -14574,7 +14873,7 @@ ${df('Customer',c.name)}${df('Channel',so.channel||so.deliveryMethod||'—')}
 ${df('Order Date',so.date)}${df('Ship Date',so.shipDate||'—')}
 ${df('Invoiced',badgeHtml(so.invoiced))}${df('Payment',badgeHtml(so.payment))}
 ${df('Warehouse',(()=>{
-  const whOpts=(db.warehouses||[]).map(w=>`<option value="${w.id}" ${String(so.warehouseId)===String(w.id)?'selected':''}>${w.name}</option>`).join('');
+  const whOpts=_activeWarehouses().map(w=>`<option value="${w.id}" ${String(so.warehouseId)===String(w.id)?'selected':''}>${w.name}</option>`).join('');
   return`<div style="display:flex;align-items:center;gap:8px">
     <select id="so-detail-wh-${so.id}" class="form-input" style="font-size:12px;padding:4px 8px;max-width:220px" onchange="updateSOWarehouse(${so.id},this.value)">
       <option value="">— Select warehouse —</option>${whOpts}
@@ -15661,7 +15960,7 @@ const AMAZON_WH_PATTERNS={
   'amazon-mx': [/amazon\s*(mexico|mx)\s*fba/i,/amazon\s*mexico/i],
 };
 function findAmazonWarehouse(channelKey){
-  const whs=db.warehouses||[];
+  const whs=_activeWarehouses();
   const patterns=AMAZON_WH_PATTERNS[channelKey]||[];
   for(const pat of patterns){
     const found=whs.find(w=>pat.test(w.name));
@@ -17304,7 +17603,7 @@ function filterMappingItems(idx){
   const q=(document.getElementById('map-search-'+idx).value||'').toLowerCase().trim();
   const dd=document.getElementById('map-dd-'+idx);
   if(!q){dd.style.display='none';return;}
-  const allItems=[...db.items.map(i=>({...i,_src:'items'})),...(db.compositeItems||[]).map(i=>({...i,_src:'compositeItems'}))];
+  const allItems=[...db.items.filter(itemAllowedForUser).map(i=>({...i,_src:'items'})),...(db.compositeItems||[]).filter(itemAllowedForUser).map(i=>({...i,_src:'compositeItems'}))];
   const matches=allItems.filter(i=>
     i.name.toLowerCase().includes(q)||(i.sku&&i.sku.toLowerCase().includes(q))
   ).slice(0,25);
@@ -18108,7 +18407,7 @@ function filterWalmartMappingItems(idx){
   const q=(document.getElementById('wal-map-search-'+idx).value||'').toLowerCase().trim();
   const dd=document.getElementById('wal-map-dd-'+idx);
   if(!q){dd.style.display='none';return;}
-  const allItems=[...db.items.map(i=>({...i,_src:'items'})),...(db.compositeItems||[]).map(i=>({...i,_src:'compositeItems'}))];
+  const allItems=[...db.items.filter(itemAllowedForUser).map(i=>({...i,_src:'items'})),...(db.compositeItems||[]).filter(itemAllowedForUser).map(i=>({...i,_src:'compositeItems'}))];
   const matches=allItems.filter(i=>i.name.toLowerCase().includes(q)||(i.sku&&i.sku.toLowerCase().includes(q))).slice(0,25);
   if(!matches.length){
     dd.innerHTML='<div style="padding:8px 12px;font-size:12px;color:var(--text-light)">No items found</div>';
@@ -18696,26 +18995,38 @@ function currentUserBrands(){
   return ab;
 }
 
-// Returns true if an item is visible to the current user
+// Returns true if an item is visible to the current user AND the active brand filter
 // Items with no brand are treated as "Hey Honey" (all pre-brand-launch items)
 function itemAllowedForUser(item){
-  const ab=currentUserBrands();
-  if(!ab)return true;
   const brand=item.brand||'Hey Honey'; // unbranded → Hey Honey
-  return ab.includes(brand);
+  // 1. User brand restriction (Jonathan can only see AristoSpice)
+  const ab=currentUserBrands();
+  if(ab && !ab.includes(brand)) return false;
+  // 2. Active brand filter (brand switcher — "AristoSpice" vs "Hey Honey" vs all)
+  if(_activeBrand && !_brandEq(brand, _activeBrand)) return false;
+  return true;
 }
 
-// Returns true if a document (SO/PO/INV/BILL) is visible:
-// visible if it has at least one item from an allowed brand, OR has no items at all
+// Returns true if a document (SO/PO/INV/BILL) is visible given user restrictions
+// AND the currently active brand filter.
+// A document is visible if it has at least one line item from a visible brand.
 function docAllowedForUser(doc){
   const ab=currentUserBrands();
-  if(!ab)return true;
+  // Helper: is this brand visible under both user restriction and active-brand filter?
+  const brandOk=(brand)=>{
+    if(ab && !ab.includes(brand)) return false;
+    if(_activeBrand && !_brandEq(brand, _activeBrand)) return false;
+    return true;
+  };
   const items=doc.items||doc.lineItems||[];
-  if(items.length===0)return true;
+  if(items.length===0){
+    // No line items → check doc-level brand (POs, empty docs)
+    return brandOk(doc.brand||'Hey Honey');
+  }
   return items.some(li=>{
     const itm=(db.items||[]).find(i=>String(i.id)===String(li.itemId))||(db.compositeItems||[]).find(i=>String(i.id)===String(li.itemId));
     const brand=itm?(itm.brand||'Hey Honey'):'Hey Honey'; // unbranded → Hey Honey
-    return ab.includes(brand);
+    return brandOk(brand);
   });
 }
 
@@ -18937,8 +19248,8 @@ function seedFromZoho(){
 let _siVkitRowCount=0;
 
 function _allItemOpts(){
-  const items=(db.items||[]).map(i=>`<option value="items:${i.id}" data-src="items">${i.name}${i.sku?' ('+i.sku+')':''}</option>`);
-  const cis=(db.compositeItems||[]).map(i=>`<option value="compositeItems:${i.id}" data-src="compositeItems">${i.name}${i.sku?' ('+i.sku+')':''} [CI]</option>`);
+  const items=(db.items||[]).filter(itemAllowedForUser).map(i=>`<option value="items:${i.id}" data-src="items">${i.name}${i.sku?' ('+i.sku+')':''}</option>`);
+  const cis=(db.compositeItems||[]).filter(itemAllowedForUser).map(i=>`<option value="compositeItems:${i.id}" data-src="compositeItems">${i.name}${i.sku?' ('+i.sku+')':''} [CI]</option>`);
   return'<option value="">— Select Component —</option>'+items.join('')+cis.join('');
 }
 
@@ -18960,8 +19271,8 @@ let _lastVkitRowComp=null;
 
 function _initVkitSearch(rowId,comp){
   const allOpts=[
-    ...(db.items||[]).map(i=>({v:`items:${i.id}`,l:`${i.name}${i.sku?' ('+i.sku+')':''}`})),
-    ...(db.compositeItems||[]).map(i=>({v:`compositeItems:${i.id}`,l:`${i.name}${i.sku?' ('+i.sku+')':''} [CI]`}))
+    ...(db.items||[]).filter(itemAllowedForUser).map(i=>({v:`items:${i.id}`,l:`${i.name}${i.sku?' ('+i.sku+')':''}`})),
+    ...(db.compositeItems||[]).filter(itemAllowedForUser).map(i=>({v:`compositeItems:${i.id}`,l:`${i.name}${i.sku?' ('+i.sku+')':''} [CI]`}))
   ];
   const curV=comp?`${comp.src||'items'}:${comp.itemId}`:'';
   const curItem=comp?[...(db.items||[]),...(db.compositeItems||[])].find(i=>String(i.id)===String(comp.itemId)):null;
@@ -19383,12 +19694,12 @@ function openTaskModal(id, _addAnother){
   const task=id?db.tasks.find(t=>t.id===id):null;
   _loadUsersIfNeeded(); // ensure _allUsers is populated for assignment
   const t=task||{id:null,title:'',status:'To Do',priority:'Normal',dueDate:'',assignee:'',assignedBy:'',notes:'',link:null,category:'',comments:[],recurring:'',tags:[]};
-  const allItems=[...(db.items||[]).map(i=>({v:i.id,l:i.name,t:'item',extra:i.sku?` (${i.sku})`:''})),
-    ...(db.compositeItems||[]).map(i=>({v:i.id,l:i.name,t:'composite-item',extra:i.sku?` (${i.sku})`:''}))];
-  const soOpts=(db.salesOrders||[]).slice(-80).reverse().map(o=>`<option value="${o.id}" data-label="${o.orderNo||o.id}"${t.link?.id===String(o.id)?'selected':''}>${o.orderNo||o.id} — ${o.customerName||''}</option>`).join('');
-  const poOpts=(db.purchaseOrders||[]).slice(-80).reverse().map(o=>`<option value="${o.id}" data-label="${o.poNumber||o.id}"${t.link?.id===String(o.id)?'selected':''}>${o.poNumber||o.id} — ${o.vendorName||''}</option>`).join('');
-  const custOpts=(db.customers||[]).map(c=>`<option value="${c.id}" data-label="${c.name}"${t.link?.id===String(c.id)?'selected':''}>${c.name}</option>`).join('');
-  const vendOpts=(db.vendors||[]).map(v=>`<option value="${v.id}" data-label="${v.name}"${t.link?.id===String(v.id)?'selected':''}>${v.name}</option>`).join('');
+  const allItems=[...(db.items||[]).filter(itemAllowedForUser).map(i=>({v:i.id,l:i.name,t:'item',extra:i.sku?` (${i.sku})`:''})),
+    ...(db.compositeItems||[]).filter(itemAllowedForUser).map(i=>({v:i.id,l:i.name,t:'composite-item',extra:i.sku?` (${i.sku})`:''}))];
+  const soOpts=(db.salesOrders||[]).filter(docAllowedForUser).slice(-80).reverse().map(o=>`<option value="${o.id}" data-label="${o.orderNo||o.id}"${t.link?.id===String(o.id)?'selected':''}>${o.orderNo||o.id} — ${o.customerName||''}</option>`).join('');
+  const poOpts=(db.purchaseOrders||[]).filter(docAllowedForUser).slice(-80).reverse().map(o=>`<option value="${o.id}" data-label="${o.poNumber||o.id}"${t.link?.id===String(o.id)?'selected':''}>${o.poNumber||o.id} — ${o.vendorName||''}</option>`).join('');
+  const custOpts=(db.customers||[]).filter(c=>!_activeBrand||!c.brand||_brandEq(c.brand,_activeBrand)).map(c=>`<option value="${c.id}" data-label="${c.name}"${t.link?.id===String(c.id)?'selected':''}>${c.name}</option>`).join('');
+  const vendOpts=(db.vendors||[]).filter(v=>!_activeBrand||!v.brand||_brandEq(v.brand,_activeBrand)).map(v=>`<option value="${v.id}" data-label="${v.name}"${t.link?.id===String(v.id)?'selected':''}>${v.name}</option>`).join('');
   const itemOpts=allItems.map(i=>`<option value="${i.v}" data-type="${i.t}" data-label="${i.l}"${t.link?.id===String(i.v)?'selected':''}>${i.l}${i.extra}</option>`).join('');
   const comments=(t.comments||[]).map(c=>`<div style="padding:6px 8px;border-bottom:1px solid var(--border);font-size:12px"><span style="font-weight:600;color:var(--primary)">${c.author||'Admin'}:</span> ${c.text} <span style="font-size:10px;color:var(--text-light);float:right">${(c.at||'').slice(0,16)}</span></div>`).join('');
   // Status pill styles
