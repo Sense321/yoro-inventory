@@ -778,7 +778,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 for u in users:
                     if u['id'] == uid:
                         # update fields (never update id, never update password here)
-                        for field in ('name','email','role','active','permissions'):
+                        for field in ('name','email','role','active','permissions','allowedBrands'):
                             if field in payload:
                                 u[field] = payload[field]
                         # optional password reset by admin

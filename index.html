@@ -18990,7 +18990,13 @@ const BRAND_OPTIONS=[
 // Returns array of allowed brands for current user, or null if unrestricted
 function currentUserBrands(){
   if(!currentUser)return null;
-  const ab=currentUser.allowedBrands;
+  // Primary: from user object (set by server on login or updated in-session)
+  let ab=currentUser.allowedBrands;
+  // Fallback: from main DB userBrandAssignments (survives server restarts even if server doesn't save allowedBrands)
+  if((!ab||ab.length===0)&&db.userBrandAssignments&&currentUser.id){
+    const dba=db.userBrandAssignments[String(currentUser.id)];
+    if(dba&&dba.length>0)ab=dba;
+  }
   if(!ab||ab.length===0)return null; // null = no restriction
   return ab;
 }
@@ -19195,6 +19201,12 @@ async function saveUserModal(uid){
     const r=await fetch('/users',{method:'POST',headers:authHeaders(),body:JSON.stringify(payload)});
     const d=await r.json();
     if(!d.ok){showToast(d.error||'Error saving user','error');return;}
+    // Also persist allowedBrands in main DB as fallback (for servers that don't save it to users file)
+    if(uid){
+      if(!db.userBrandAssignments)db.userBrandAssignments={};
+      db.userBrandAssignments[String(uid)]=allowedBrands;
+      saveDB();
+    }
     // If editing the currently logged-in user, update in-memory brand restrictions
     if(uid&&currentUser&&String(currentUser.id)===String(uid)){
       currentUser.allowedBrands=allowedBrands;
