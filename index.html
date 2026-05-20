@@ -19393,13 +19393,28 @@ function setTaskView(v,tabEl){
   renderTasks();
 }
 
+function _taskVisibleToUser(t){
+  // Admins see all tasks
+  if(!currentUser||currentUser.role==='admin')return true;
+  const uName=(currentUser.name||currentUser.username||'').toLowerCase();
+  const uId=String(currentUser.id||'');
+  // Visible if assigned to this user
+  if(t.assignedUserId&&String(t.assignedUserId)===uId)return true;
+  if(t.assignee&&t.assignee.toLowerCase()===uName)return true;
+  // Visible if created/assigned by this user
+  if(t.assignedBy&&t.assignedBy.toLowerCase()===uName)return true;
+  if(t.createdBy&&t.createdBy.toLowerCase()===uName)return true;
+  if(t.createdByUserId&&String(t.createdByUserId)===uId)return true;
+  return false;
+}
+
 function _getFilteredTasks(){
   if(!db.tasks)db.tasks=[];
   const search=(document.getElementById('task-search')?.value||'').toLowerCase();
   const assignee=document.getElementById('task-assignee-filter')?.value||'';
   const priority=document.getElementById('task-priority-filter')?.value||'';
   const vendor=document.getElementById('task-vendor-filter')?.value||'';
-  let tasks=[...db.tasks];
+  let tasks=[...db.tasks].filter(_taskVisibleToUser);
   if(search)tasks=tasks.filter(t=>(t.title||'').toLowerCase().includes(search)||(t.notes||'').toLowerCase().includes(search)||(t.assignee||'').toLowerCase().includes(search));
   if(assignee)tasks=tasks.filter(t=>t.assignee===assignee);
   if(priority)tasks=tasks.filter(t=>t.priority===priority);
@@ -19437,7 +19452,7 @@ function renderTasks(){
   _populateVendorFilter();
   // Nav badge
   const navBadge=document.getElementById('nav-tasks-badge');
-  if(navBadge){const today=new Date().toISOString().slice(0,10);const c=(db.tasks||[]).filter(t=>t.status!=='Done'&&t.status!=='Cancelled'&&(t.status!=='Waiting for Vendor'||(t.dueDate&&t.dueDate<=today))).length;navBadge.textContent=c;navBadge.style.display=c?'inline':'none';}
+  if(navBadge){const today=new Date().toISOString().slice(0,10);const c=(db.tasks||[]).filter(_taskVisibleToUser).filter(t=>t.status!=='Done'&&t.status!=='Cancelled'&&(t.status!=='Waiting for Vendor'||(t.dueDate&&t.dueDate<=today))).length;navBadge.textContent=c;navBadge.style.display=c?'inline':'none';}
   const tasks=_getFilteredTasks();
   const el=document.getElementById('task-content');
   if(!el)return;
@@ -20122,7 +20137,7 @@ function saveTaskModal(id, _addAnother){
       if(status==='Done'&&!t.completedAt){t.completedAt=new Date().toISOString();_spawnRecurringTask(t);}
     }
   } else {
-    db.tasks.push({id:db.nextId.tasks++,title,status,priority,dueDate,assignee,assignedUserId,assignedBy:currentUser?.name||'',category,brand,vendorId,vendorName,notes,link,recurring,subtasks,tags:[],comments:[],createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),completedAt:null});
+    db.tasks.push({id:db.nextId.tasks++,title,status,priority,dueDate,assignee,assignedUserId,assignedBy:currentUser?.name||'',createdBy:currentUser?.name||'',createdByUserId:String(currentUser?.id||''),category,brand,vendorId,vendorName,notes,link,recurring,subtasks,tags:[],comments:[],createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),completedAt:null});
     if(assignedUserId){_sendTaskAssignEmail(assignedUserId,title,'',currentUser?.name||'Admin');}
   }
   renderTasks();
