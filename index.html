@@ -19068,8 +19068,17 @@ function docAllowedForUser(doc){
 
 let _allUsers=[];
 async function _loadUsersIfNeeded(){
-  if(_allUsers.length)return;
-  try{const r=await fetch('/users',{headers:{'Authorization':'Bearer '+_authToken}});_allUsers=await r.json();}catch(e){_allUsers=[];}
+  if(_allUsers&&_allUsers.length)return;
+  try{
+    const r=await fetch('/users',{headers:authHeaders()});
+    const d=await r.json();
+    // Response is either an array of users or an error object
+    _allUsers=Array.isArray(d)?d:(d.users||[]);
+    // Fallback: if still empty, build from db.users (in-memory)
+    if(!_allUsers.length&&db.users&&db.users.length)_allUsers=db.users;
+  }catch(e){
+    _allUsers=db.users||[];
+  }
 }
 async function _sendTaskAssignEmail(userId,taskTitle,stepTitle,assignedBy){
   const user=(_allUsers||[]).find(u=>String(u.id)===String(userId));
