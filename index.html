@@ -18784,7 +18784,7 @@ async function syncShopifyOrders(limit=250){
       };
       const payMap={paid:'Paid',pending:'Unpaid',refunded:'Paid',partially_paid:'Unpaid',voided:'Unpaid'};
       const payment=payMap[ord.financial_status]||'Unpaid';
-      const existing=db.salesOrders.find(s=>String(s.shopifyOrderId)===String(ord.id));
+      const existing=db.salesOrders.find(s=>String(s.shopifyOrderId)===String(ord.id)||(s.soNo===soNo&&s.shopifyOrderId));
       const shippingTotal=(ord.shipping_lines||[]).reduce((s,sl)=>s+parseFloat(sl.price||0),0);
       const payload={soNo,refNo:String(ord.id),customerId:shopifyCust.id,brand:db.shopify.brand||'Hey Honey',status:'Confirmed',invoiced:payment==='Paid'?'Invoiced':'Not Invoiced',payment,packed:ord.fulfillment_status==='fulfilled'?'Packed':'Not Packed',shipped:ord.fulfillment_status==='fulfilled'?'Shipped':'Not Shipped',amount:parseFloat(ord.total_price),subtotal:parseFloat(ord.subtotal_price||0),totalDiscount:parseFloat(ord.total_discounts||0),discountCodes:(ord.discount_codes||[]).map(d=>d.code).join(', '),shippingTotal,deliveryMethod:'Shopify',channel:'Shopify',warehouseId:getChannelWarehouseId('shopify')||1,date:ord.created_at?ord.created_at.substring(0,10):new Date().toISOString().substring(0,10),items:allItems,shopifyOrderId:ord.id,shopifyCustomerId:ord.customer?.id||null,shopifyNote:ord.note||'',shopifyNoteAttributes:ord.note_attributes||[],shopifyTags:ord.tags||'',...shipTo};
       if(existing){
@@ -18887,7 +18887,7 @@ async function refetchShopifyOrder(shopifyOrderId, opts){
     const payload={soNo,refNo:String(ord.id),customerId:shopifyCust.id,status:'Confirmed',invoiced:payment==='Paid'?'Invoiced':'Not Invoiced',payment,packed:ord.fulfillment_status==='fulfilled'?'Packed':'Not Packed',shipped:ord.fulfillment_status==='fulfilled'?'Shipped':'Not Shipped',amount:parseFloat(ord.total_price),subtotal:parseFloat(ord.subtotal_price||0),totalDiscount:parseFloat(ord.total_discounts||0),discountCodes:(ord.discount_codes||[]).map(d=>d.code).join(', '),shippingTotal,deliveryMethod:'Shopify',channel:'Shopify',warehouseId:getChannelWarehouseId('shopify')||1,date:ord.created_at?ord.created_at.substring(0,10):new Date().toISOString().substring(0,10),items:allItems,shopifyOrderId:ord.id,shopifyCustomerId:ord.customer?.id||null,shopifyNote:ord.note||'',shopifyNoteAttributes:ord.note_attributes||[],shopifyTags:ord.tags||'',...shipTo};
     if(db.shopify.pendingOrders)db.shopify.pendingOrders=db.shopify.pendingOrders.filter(p=>String(p.shopifyOrderId)!==String(ord.id));
     _pruneStalePendingMappings();
-    const existing=db.salesOrders.find(s=>String(s.shopifyOrderId)===String(ord.id));
+    const existing=db.salesOrders.find(s=>String(s.shopifyOrderId)===String(ord.id)||(s.soNo===soNo&&s.shopifyOrderId));
     let action;
     if(existing){const{items:_,...statusFields}=payload;Object.assign(existing,statusFields);action='updated';}
     else{db.salesOrders.push({id:db.nextId.salesOrders++,...payload});action='added';}
