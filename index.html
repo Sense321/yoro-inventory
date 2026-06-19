@@ -4834,7 +4834,7 @@ function autoPackShopifyOrders(){
       (async()=>{
         for(const ig of ssIntegrations){
           try{
-            const r=await ssApiCall(ig,'POST','/orders/createorder',buildSSOrder(so,ig));
+            const r=await _ssCreateOrder(ig,buildSSOrder(so,ig));
             ig.lastPush=new Date().toISOString();
             so.ssPushedAt=new Date().toISOString();
             if(r?.orderId)so.ssOrderId=r.orderId;
@@ -8338,6 +8338,24 @@ function updateSOWarehouse(soId, whId){
   showToast('Warehouse updated');
 }
 
+// SS createorder with automatic storeId fallback: if storeId causes 404/400,
+// retry without it (storeId in db may be stale/invalid for this SS account).
+async function _ssCreateOrder(ig, payload){
+  try{
+    return await ssApiCall(ig,'POST','/orders/createorder',payload);
+  }catch(e){
+    const is404or400=e.message.startsWith('HTTP 404')||e.message.startsWith('HTTP 400');
+    const hasStoreId=payload?.advancedOptions?.storeId;
+    if(is404or400&&hasStoreId){
+      const fallback={...payload,advancedOptions:{...payload.advancedOptions}};
+      delete fallback.advancedOptions.storeId;
+      if(!Object.keys(fallback.advancedOptions).length)delete fallback.advancedOptions;
+      return await ssApiCall(ig,'POST','/orders/createorder',fallback);
+    }
+    throw e;
+  }
+}
+
 async function resyncOrderToShipStation(soId){
   const so=db.salesOrders.find(o=>o.id===soId);if(!so)return;
   const ssIgs=(db.integrations||[]).filter(ig=>ig.type==='shipstation'&&ig.status==='connected'&&(ig.permissions?.write||[]).includes('orders'));
@@ -8346,7 +8364,7 @@ async function resyncOrderToShipStation(soId){
   let pushed=0,errs=[];
   for(const ig of ssIgs){
     try{
-      const r=await ssApiCall(ig,'POST','/orders/createorder',buildSSOrder(so,ig));
+      const r=await _ssCreateOrder(ig,buildSSOrder(so,ig));
       ig.lastPush=new Date().toISOString();
       so.ssPushedAt=new Date().toISOString();
       if(r?.orderId)so.ssOrderId=r.orderId;
@@ -8526,7 +8544,7 @@ async function pushIntegrationNow(id){
     let sent=0, errors=[];
     for(const so of ordersToSend){
       try{
-        const r=await ssApiCall(ig,'POST','/orders/createorder', buildSSOrder(so,ig));
+        const r=await _ssCreateOrder(ig,buildSSOrder(so,ig));
         so.ssPushedAt=new Date().toISOString();
         if(r?.orderId)so.ssOrderId=r.orderId;
         sent++;
@@ -17238,7 +17256,7 @@ function confirmPackOrder(soId){
       let pushed=0, errs=[];
       for(const ig of ssIntegrations){
         try{
-          const r=await ssApiCall(ig,'POST','/orders/createorder', buildSSOrder(so,ig));
+          const r=await _ssCreateOrder(ig,buildSSOrder(so,ig));
           ig.lastPush=new Date().toISOString();
           so.ssPushedAt=new Date().toISOString();
           if(r?.orderId)so.ssOrderId=r.orderId;
