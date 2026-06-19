@@ -8270,12 +8270,17 @@ function buildSSOrder(so, ig){
     country: countryCode,
     ...(addr.phone||customer.phone?{phone:addr.phone||customer.phone}:{})
   } : {name: addrName};
-  const _allInv=[...(db.items||[]),...(db.compositeItems||[])];
   const items = (so.items||so.lines||[]).filter(l=>!l.isShipping&&l.itemId).map(li=>{
-    const invItem=_allInv.find(i=>String(i.id)===String(li.itemId));
+    // Use stored itemSrc to look up the correct array — never guess from itemId alone
+    // because the same ID can exist in both db.items and db.compositeItems.
+    let invItem=null;
+    if(li.itemSrc){
+      const primary=li.itemSrc==='compositeItems'?(db.compositeItems||[]):(db.items||[]);
+      invItem=primary.find(i=>String(i.id)===String(li.itemId));
+    }
     return {
-      sku: invItem?.sku||li.shopifySku||li.sku||String(li.itemId),
-      name: invItem?.name||li.itemName||li.shopifyTitle||'Item',
+      sku: li.shopifySku||li.sku||invItem?.sku||'',
+      name: li.itemName||invItem?.name||li.shopifyTitle||'Item',
       quantity: parseFloat(li.qty||1),
       unitPrice: parseFloat(li.rate||li.unitPrice||0),
       lineItemKey: String(li.itemId)
