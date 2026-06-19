@@ -12456,7 +12456,11 @@ async function saveSOPage(status='draft'){
     showToast('Sales Order saved');
   }
   window._soPendingFiles=[];window._soDeletedAttachments=[];
-  saveDBNow();closeFP();renderCurrentView();
+  // Await save so flyout only closes after data is confirmed on server.
+  // If save fails, keep the flyout open so the user doesn't lose their work.
+  const _saved=await saveDBNow();
+  if(!_saved){showToast('Save failed — please try again','error');return;}
+  closeFP();renderCurrentView();
 }
 
 // ── ATTACHMENT HELPERS ────────────────────────────────────────────────────────
