@@ -12329,6 +12329,7 @@ async function saveSOPage(status='draft'){
     if(!itemId)return;
     lines.push({
       itemId,
+      itemSrc:inp.dataset.itemSrc||'items',
       itemName:inp.dataset.itemName||'',
       desc:document.getElementById(`so-desc-${idx}`)?.value||'',
       qty:parseFloat(document.getElementById(`so-qty-${idx}`)?.value)||0,
@@ -16866,11 +16867,14 @@ function showSODetail(id){
     const sku=li.shopifySku||li.sku||'';
     const skuL=sku.toLowerCase();
     let it=null;
-    // For manual orders: resolve by itemId directly — no SKU mapping needed
+    // For manual orders: resolve by itemId+itemSrc directly — no SKU mapping needed
     if(isManualSO){
       if(li.itemId){
         const _lid=String(li.itemId);
-        it=(db.items||[]).find(i=>String(i.id)===_lid)||(db.compositeItems||[]).find(i=>String(i.id)===_lid)||null;
+        const _src=li.itemSrc||'items';
+        const _primary=_src==='compositeItems'?(db.compositeItems||[]):(db.items||[]);
+        const _secondary=_src==='compositeItems'?(db.items||[]):(db.compositeItems||[]);
+        it=_primary.find(i=>String(i.id)===_lid)||_secondary.find(i=>String(i.id)===_lid)||null;
       }
     } else {
       // Resolution priority for Shopify/Amazon orders:
