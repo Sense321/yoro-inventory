@@ -16891,8 +16891,8 @@ function showSODetail(id){
         it=_pool.find(i=>i.id===li.itemId)||_alt.find(i=>i.id===li.itemId)||null;
       }
     }
-    // Name: live DB name first (always current), then stored itemName, never use shopifyTitle as primary
-    const name=it?.name||li.itemName||li.shopifyTitle||'?';
+    // For manual orders, itemName is authoritative. For Shopify/external, prefer resolved item name.
+    const name=isManualSO?(li.itemName||it?.name||'?'):(it?.name||li.itemName||li.shopifyTitle||'?');
     const lineDiscount=parseFloat(li.lineDiscount||0);
     const isShipping=!!li.isShipping;
     const noSkuItem=!it&&li.shopifySku&&li.shopifySku.startsWith('[no-sku:');
