@@ -12449,7 +12449,7 @@ async function saveSOPage(status='draft'){
     showToast('Sales Order saved');
   }
   window._soPendingFiles=[];window._soDeletedAttachments=[];
-  saveDB();closeFP();renderCurrentView();
+  saveDBNow();closeFP();renderCurrentView();
 }
 
 // ── ATTACHMENT HELPERS ────────────────────────────────────────────────────────
