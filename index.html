@@ -3346,7 +3346,9 @@ function loadDB(){
       if(!localItem||!localItem.name)return;
       if(li.itemName!==localItem.name){
         li.itemName=localItem.name;
-        li.itemSrc=((db.compositeItems||[]).some(i=>String(i.id)===sid)&&!(db.items||[]).some(i=>String(i.id)===sid))?'compositeItems':'items';
+        // Never overwrite itemSrc — the stored value was set when the user picked the item.
+        // The old logic forced 'items' whenever an id existed in both arrays (ID collision),
+        // which permanently corrupted manual orders every startup.
         _itemNameFixed++;_soHealed=true;
       }
     });
