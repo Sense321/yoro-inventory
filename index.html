@@ -17048,6 +17048,7 @@ ${so.walmartOrderId?(()=>{
   </div>
 </div>
 <div class="detail-section">Line Items</div>
+<details style="margin-bottom:8px;font-size:11px;color:#6b7280"><summary style="cursor:pointer;padding:4px 0">🔍 Debug: raw stored item data</summary><pre style="font-size:10px;background:#f8f9fb;padding:8px;border-radius:4px;overflow:auto;max-height:200px">${JSON.stringify((so.items||so.lines||[]).map(l=>({id:l.itemId,src:l.itemSrc,name:l.itemName,sku:l.sku,shopifySku:l.shopifySku})),null,2)}</pre></details>
 ${lineRows?`<table style="width:100%;border-collapse:collapse"><thead><tr style="background:#f8f9fb"><th style="padding:6px 8px;font-size:11px;text-align:left;border-bottom:1px solid var(--border)">Item</th><th style="padding:6px 8px;font-size:11px;border-bottom:1px solid var(--border)">Qty</th><th style="padding:6px 8px;font-size:11px;border-bottom:1px solid var(--border)">Rate</th><th style="padding:6px 8px;font-size:11px;border-bottom:1px solid var(--border)">Amount</th></tr></thead><tbody>${lineRows}</tbody></table>`:'<div style="color:var(--text-light);font-size:13px;padding:12px 0">No line items added</div>'}
 ${(()=>{
   const sub=so.subtotal!=null?so.subtotal:soLines.filter(l=>!l.isShipping).reduce((s,l)=>s+(l.amount||0),0);
