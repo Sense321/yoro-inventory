@@ -4178,6 +4178,8 @@ function navigate(view){
   updateNavHighlight(view);
   if(view==='sales-orders'){
     soAutoSyncShopify();
+    // Background reload so orders added by other users appear without a page refresh
+    loadDBFromServer().then(()=>{if(currentView==='sales-orders'&&!_isFlyoutOpen())renderSalesOrders();});
   }
   if(view==='preferences'){
     // Always show the home cards page when navigating to Settings
