@@ -4178,8 +4178,8 @@ function navigate(view){
   updateNavHighlight(view);
   if(view==='sales-orders'){
     soAutoSyncShopify();
-    // Background reload so orders added by other users appear without a page refresh
-    loadDBFromServer().then(()=>{if(currentView==='sales-orders'&&!_isFlyoutOpen())renderSalesOrders();});
+    // Background reload so orders added by other users appear — skip if local changes are pending
+    if(!_dbDirty)loadDBFromServer().then(()=>{if(currentView==='sales-orders'&&!_isFlyoutOpen())renderSalesOrders();});
   }
   if(view==='preferences'){
     // Always show the home cards page when navigating to Settings
@@ -12439,6 +12439,7 @@ async function saveSOPage(status='draft'){
     db.salesOrders.push({
       id:soId,
       ...payload,
+      userEdited:true,
       attachments:newAtts,
       invoiced:'Uninvoiced',
       payment:'Unpaid',
@@ -16929,8 +16930,8 @@ function showSODetail(id){
         it=_pool.find(i=>String(i.id)===String(li.itemId))||_alt.find(i=>String(i.id)===String(li.itemId))||null;
       }
     }
-    // For manual orders, itemName is authoritative. For Shopify/external, prefer resolved item name.
-    const name=isManualSO?(li.itemName||it?.name||'?'):(it?.name||li.itemName||li.shopifyTitle||'?');
+    // For manual or user-edited orders, stored itemName is authoritative — no lookup override
+    const name=(isManualSO||so.userEdited)?(li.itemName||it?.name||'?'):(it?.name||li.itemName||li.shopifyTitle||'?');
     const lineDiscount=parseFloat(li.lineDiscount||0);
     const isShipping=!!li.isShipping;
     const noSkuItem=!it&&li.shopifySku&&li.shopifySku.startsWith('[no-sku:');
