@@ -12030,27 +12030,14 @@ function openSOPage(data){
       // Set item search input
       const srchInp=document.getElementById(`so-item-inp-${idx}`);
       if(srchInp&&li.itemId){
-        // Resolve itemSrc: use stored value, else fall back to skuMappings (fixes
-        // orders imported before itemSrc was saved, where the ID collision causes
-        // the wrong array to be searched and the wrong product to appear)
-        let _lsrc=li.itemSrc||'';
-        if(!_lsrc){
-          const _skuKey=Object.keys(db.skuMappings||{}).find(k=>k.toLowerCase()===((li.shopifySku||li.sku||'').toLowerCase()));
-          if(_skuKey)_lsrc=(db.skuMappings[_skuKey]||{}).src||'';
-        }
-        if(!_lsrc)_lsrc='items';
-        const _lpri=_lsrc==='compositeItems'?(db.compositeItems||[]):(db.items||[]);
-        const _lsec=_lsrc==='compositeItems'?(db.items||[]):(db.compositeItems||[]);
-        let it=_lpri.find(i=>String(i.id)===String(li.itemId))||_lsec.find(i=>String(i.id)===String(li.itemId))||null;
-        srchInp.value=it?it.name:(li.itemName||`Item #${li.itemId}`);
+        // Always show the stored itemName — never re-look up by itemId which can
+        // find a different product when IDs collide across items/compositeItems arrays.
+        const displayName=li.itemName||`Item #${li.itemId}`;
+        srchInp.value=displayName;
         srchInp.dataset.itemId=li.itemId;
-        srchInp.dataset.itemName=it?it.name:(li.itemName||'');
-        srchInp.dataset.itemSrc=_lsrc;
+        srchInp.dataset.itemName=displayName;
+        srchInp.dataset.itemSrc=li.itemSrc||'';
         srchInp.classList.add('has-value');
-        // Visual warning if item still unresolved or is assembly component
-        if(!it||(it&&isAssemblyComponent(it))){
-          srchInp.style.borderColor='#dc2626';srchInp.title='⚠ Wrong item — search and re-select the correct product';
-        }
       }
       // Set qty, rate, desc
       const qtyEl=document.getElementById(`so-qty-${idx}`);
@@ -12340,7 +12327,7 @@ async function saveSOPage(status='draft'){
     if(!itemId)return;
     lines.push({
       itemId,
-      itemSrc:inp.dataset.itemSrc||'items',
+      itemSrc:inp.dataset.itemSrc||'',
       itemName:inp.dataset.itemName||'',
       desc:document.getElementById(`so-desc-${idx}`)?.value||'',
       qty:parseFloat(document.getElementById(`so-qty-${idx}`)?.value)||0,
@@ -16898,13 +16885,16 @@ function showSODetail(id){
       return src||'items';
     };
     if(isManualSO){
-      if(li.itemId){
+      if(li.itemId&&li.itemSrc){
+        // Only resolve from inventory when itemSrc is explicitly stored — never guess
+        // the array from itemId alone since ID collisions across items/compositeItems
+        // would look up a completely different product.
         const _lid=String(li.itemId);
-        const _src=_resolveItemSrc(li.itemSrc,li.shopifySku,li.sku);
-        const _primary=_src==='compositeItems'?(db.compositeItems||[]):(db.items||[]);
-        const _secondary=_src==='compositeItems'?(db.items||[]):(db.compositeItems||[]);
+        const _primary=li.itemSrc==='compositeItems'?(db.compositeItems||[]):(db.items||[]);
+        const _secondary=li.itemSrc==='compositeItems'?(db.items||[]):(db.compositeItems||[]);
         it=_primary.find(i=>String(i.id)===_lid)||_secondary.find(i=>String(i.id)===_lid)||null;
       }
+      // When itemSrc is missing: it stays null → falls back to li.itemName below
     } else {
       // Resolution priority for Shopify/Amazon orders:
       // 1. Direct SKU match (most authoritative)
