@@ -12053,8 +12053,15 @@ function openSOPage(data){
       // Set item search input
       const srchInp=document.getElementById(`so-item-inp-${idx}`);
       if(srchInp&&li.itemId){
-        // Use stored itemSrc to look in the correct array first — prevents ID collisions
-        const _lsrc=li.itemSrc||'items';
+        // Resolve itemSrc: use stored value, else fall back to skuMappings (fixes
+        // orders imported before itemSrc was saved, where the ID collision causes
+        // the wrong array to be searched and the wrong product to appear)
+        let _lsrc=li.itemSrc||'';
+        if(!_lsrc){
+          const _skuKey=Object.keys(db.skuMappings||{}).find(k=>k.toLowerCase()===((li.shopifySku||li.sku||'').toLowerCase()));
+          if(_skuKey)_lsrc=(db.skuMappings[_skuKey]||{}).src||'';
+        }
+        if(!_lsrc)_lsrc='items';
         const _lpri=_lsrc==='compositeItems'?(db.compositeItems||[]):(db.items||[]);
         const _lsec=_lsrc==='compositeItems'?(db.items||[]):(db.compositeItems||[]);
         let it=_lpri.find(i=>String(i.id)===String(li.itemId))||_lsec.find(i=>String(i.id)===String(li.itemId))||null;
@@ -16902,11 +16909,20 @@ function showSODetail(id){
     const sku=li.shopifySku||li.sku||'';
     const skuL=sku.toLowerCase();
     let it=null;
-    // For manual orders: resolve by itemId+itemSrc directly — no SKU mapping needed
+    // Helper: resolve itemSrc from skuMappings when li.itemSrc is missing (fixes
+    // orders imported before itemSrc was saved — prevents ID-collision wrong lookup)
+    const _resolveItemSrc=(itemSrc,shopifySku,lineSku)=>{
+      let src=itemSrc||'';
+      if(!src){
+        const _sk=Object.keys(db.skuMappings||{}).find(k=>k.toLowerCase()===((shopifySku||lineSku||'').toLowerCase()));
+        if(_sk)src=(db.skuMappings[_sk]||{}).src||'';
+      }
+      return src||'items';
+    };
     if(isManualSO){
       if(li.itemId){
         const _lid=String(li.itemId);
-        const _src=li.itemSrc||'items';
+        const _src=_resolveItemSrc(li.itemSrc,li.shopifySku,li.sku);
         const _primary=_src==='compositeItems'?(db.compositeItems||[]):(db.items||[]);
         const _secondary=_src==='compositeItems'?(db.items||[]):(db.compositeItems||[]);
         it=_primary.find(i=>String(i.id)===_lid)||_secondary.find(i=>String(i.id)===_lid)||null;
@@ -16915,7 +16931,7 @@ function showSODetail(id){
       // Resolution priority for Shopify/Amazon orders:
       // 1. Direct SKU match (most authoritative)
       // 2. skuMappings (permanent mappings)
-      // 3. li.itemId (stored at import — can be stale)
+      // 3. li.itemId with itemSrc (skuMapping fallback when itemSrc missing)
       if(sku){
         it=db.items.find(i=>(i.sku||'').toLowerCase()===skuL)||(db.compositeItems||[]).find(i=>(i.sku||'').toLowerCase()===skuL)||null;
       }
@@ -16924,14 +16940,14 @@ function showSODetail(id){
         if(k){const e=(db.skuMappings||{})[k];const _p=e.src==='compositeItems'?(db.compositeItems||[]):db.items;it=_p.find(i=>i.id===e.itemId)||null;}
       }
       if(!it&&li.itemId){
-        const _resolvedSrc=li.itemSrc||'items';
+        const _resolvedSrc=_resolveItemSrc(li.itemSrc,li.shopifySku,li.sku);
         const _pool=_resolvedSrc==='compositeItems'?(db.compositeItems||[]):db.items;
         const _alt=_resolvedSrc==='compositeItems'?db.items:(db.compositeItems||[]);
         it=_pool.find(i=>String(i.id)===String(li.itemId))||_alt.find(i=>String(i.id)===String(li.itemId))||null;
       }
     }
-    // Stored itemName is always authoritative — set by user's picker or sync mapping
-    const name=li.itemName||it?.name||li.shopifyTitle||'?';
+    // Inventory name is authoritative; fall back to stored itemName or Shopify title
+    const name=it?.name||li.itemName||li.shopifyTitle||'?';
     const lineDiscount=parseFloat(li.lineDiscount||0);
     const isShipping=!!li.isShipping;
     const noSkuItem=!it&&li.shopifySku&&li.shopifySku.startsWith('[no-sku:');
