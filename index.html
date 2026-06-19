@@ -18830,9 +18830,9 @@ async function syncShopifyOrders(limit=250){
         // Preserve line items always; preserve financial totals for user-edited orders
         const{items:_,amount:_a,subtotal:_s,totalDiscount:_td,shippingTotal:_st,...statusFields}=payload;
         if(existing.userEdited){
-          // Only sync fulfillment/payment status — never overwrite user's prices or discount
-          const{payment,packed,shipped,invoiced}=statusFields;
-          Object.assign(existing,{payment,packed,shipped,invoiced});
+          // Only sync payment/invoice status — never auto-pack or overwrite user's prices
+          const{payment,invoiced}=statusFields;
+          Object.assign(existing,{payment,invoiced});
         }else{
           Object.assign(existing,statusFields);
         }
@@ -18937,8 +18937,8 @@ async function refetchShopifyOrder(shopifyOrderId, opts){
     if(existing){
       const{items:_,amount:_a,subtotal:_s,totalDiscount:_td,shippingTotal:_st,...statusFields}=payload;
       if(existing.userEdited){
-        const{payment,packed,shipped,invoiced}=statusFields;
-        Object.assign(existing,{payment,packed,shipped,invoiced});
+        const{payment,invoiced}=statusFields;
+        Object.assign(existing,{payment,invoiced});
       }else{Object.assign(existing,statusFields);}
       action='updated';
     }else{db.salesOrders.push({id:db.nextId.salesOrders++,...payload});action='added';}
