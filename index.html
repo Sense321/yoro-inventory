@@ -3329,31 +3329,6 @@ function loadDB(){
       }
     });
   });
-  // Fix itemName on Shopify/imported SO line items — was historically stored as Shopify's product title
-  // instead of the local item's name. Corrects all orders every load so re-syncs propagate instantly.
-  let _itemNameFixed=0;
-  (db.salesOrders||[]).forEach(so=>{
-    const lines=(so.items&&so.items.length?so.items:so.lines)||[];
-    lines.forEach(li=>{
-      if(!li.itemId)return;
-      const sid=String(li.itemId);
-      let localItem=null;
-      if(li.itemSrc==='compositeItems'){
-        localItem=(db.compositeItems||[]).find(i=>String(i.id)===sid)||(db.items||[]).find(i=>String(i.id)===sid);
-      }else{
-        localItem=(db.items||[]).find(i=>String(i.id)===sid)||(db.compositeItems||[]).find(i=>String(i.id)===sid);
-      }
-      if(!localItem||!localItem.name)return;
-      if(li.itemName!==localItem.name){
-        li.itemName=localItem.name;
-        // Never overwrite itemSrc — the stored value was set when the user picked the item.
-        // The old logic forced 'items' whenever an id existed in both arrays (ID collision),
-        // which permanently corrupted manual orders every startup.
-        _itemNameFixed++;_soHealed=true;
-      }
-    });
-  });
-  if(_itemNameFixed>0)console.log(`[init] Fixed itemName on ${_itemNameFixed} SO line item(s)`);
   if(_soHealed)saveDB();
   // ── Step reminders: fire any that are due today (or overdue) ──────────────
   {const _rToday=new Date().toISOString().slice(0,10);
