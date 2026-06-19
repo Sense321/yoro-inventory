@@ -7872,8 +7872,12 @@ async function runSBOrdersSync(igId){
       };
 
       const existing=db.salesOrders.find(s=>s.amazonOrderId===orderId||s.soNo===soNo||s.soNo==='SB-'+orderId);
-      if(existing){const{items:_,...statusFields}=payload;Object.assign(existing,statusFields);updated++;}
-      else{
+      if(existing){
+        const{items:_,amount:_a,subtotal:_s,totalDiscount:_td,shippingTotal:_st,...statusFields}=payload;
+        if(existing.userEdited){const{payment,packed,shipped,invoiced}=statusFields;Object.assign(existing,{payment,packed,shipped,invoiced});}
+        else{Object.assign(existing,statusFields);}
+        updated++;
+      }else{
         if(!db.nextId.salesOrders)db.nextId.salesOrders=1;
         db.salesOrders.push({id:db.nextId.salesOrders++,...payload});
         added++;
@@ -11576,6 +11580,8 @@ function fpItemSearch(prefix,idx,forPurchase){
   const inp=document.getElementById(`${prefix}-item-inp-${idx}`);
   const dd=document.getElementById(`${prefix}-item-dd-${idx}`);
   if(!inp||!dd)return;
+  // Clear any previously selected item so save never uses a stale itemId
+  inp.dataset.itemId='';inp.dataset.itemName='';inp.dataset.itemSrc='';
   const q=(inp.value||'').toLowerCase().trim();
   const allSellable=[...(db.items||[]).map(i=>({...i,_src:'items'})),...(db.compositeItems||[]).map(i=>({...i,_src:'compositeItems'}))]
     .filter(itemAllowedForUser); // restrict to active brand
@@ -12066,6 +12072,16 @@ function openSOPage(data){
       if(descEl)descEl.value=li.desc||li.description||'';
       fpCalcLine('so',idx);
     });
+    // Restore discount / shipping / adjustment from saved data
+    const _discEl=document.getElementById('so-overall-disc');
+    const _discTypeEl=document.getElementById('so-disc-type');
+    const _shipEl=document.getElementById('so-shipping');
+    const _adjEl=document.getElementById('so-adj');
+    if(_discEl)_discEl.value=data.discountPct||0;
+    if(_discTypeEl&&data.discountType)_discTypeEl.value=data.discountType;
+    if(_shipEl)_shipEl.value=data.shippingTotal||0;
+    if(_adjEl)_adjEl.value=data.adjustment||0;
+    fpCalcTotals('so');
   }
   // Initialize attachment state
   window._soPendingFiles=[];
@@ -12374,7 +12390,13 @@ async function saveSOPage(status='draft'){
     items:lines,
     status,
     amount:soAmt,
-    total:soAmt
+    total:soAmt,
+    subtotal:parseFloat(document.getElementById('so-sub-total')?.textContent)||0,
+    discountPct:parseFloat(document.getElementById('so-overall-disc')?.value)||0,
+    discountType:document.getElementById('so-disc-type')?.value||'pct',
+    totalDiscount:parseFloat(document.getElementById('so-disc-total')?.textContent)||0,
+    shippingTotal:parseFloat(document.getElementById('so-shipping')?.value)||0,
+    adjustment:parseFloat(document.getElementById('so-adj')?.value)||0
   };
   let soId;
   if(editId){
@@ -12384,6 +12406,7 @@ async function saveSOPage(status='draft'){
       // Handle deletions first
       await _attHandleDeletes('so',editId,window._soDeletedAttachments||[]);
       Object.assign(existing,payload);
+      existing.userEdited=true;
       soId=existing.id;
       // Upload pending files and merge
       const newAtts=await _attUploadPending('so',soId,window._soPendingFiles||[]);
@@ -18798,9 +18821,15 @@ async function syncShopifyOrders(limit=250){
       const shippingTotal=(ord.shipping_lines||[]).reduce((s,sl)=>s+parseFloat(sl.price||0),0);
       const payload={soNo,refNo:String(ord.id),customerId:shopifyCust.id,brand:db.shopify.brand||'Hey Honey',status:'Confirmed',invoiced:payment==='Paid'?'Invoiced':'Not Invoiced',payment,packed:ord.fulfillment_status==='fulfilled'?'Packed':'Not Packed',shipped:ord.fulfillment_status==='fulfilled'?'Shipped':'Not Shipped',amount:parseFloat(ord.total_price),subtotal:parseFloat(ord.subtotal_price||0),totalDiscount:parseFloat(ord.total_discounts||0),discountCodes:(ord.discount_codes||[]).map(d=>d.code).join(', '),shippingTotal,deliveryMethod:'Shopify',channel:'Shopify',warehouseId:getChannelWarehouseId('shopify')||1,date:ord.created_at?ord.created_at.substring(0,10):new Date().toISOString().substring(0,10),items:allItems,shopifyOrderId:ord.id,shopifyCustomerId:ord.customer?.id||null,shopifyNote:ord.note||'',shopifyNoteAttributes:ord.note_attributes||[],shopifyTags:ord.tags||'',...shipTo};
       if(existing){
-        // Preserve manually corrected line items — only sync status/financial fields
-        const{items:_,...statusFields}=payload;
-        Object.assign(existing,statusFields);
+        // Preserve line items always; preserve financial totals for user-edited orders
+        const{items:_,amount:_a,subtotal:_s,totalDiscount:_td,shippingTotal:_st,...statusFields}=payload;
+        if(existing.userEdited){
+          // Only sync fulfillment/payment status — never overwrite user's prices or discount
+          const{payment,packed,shipped,invoiced}=statusFields;
+          Object.assign(existing,{payment,packed,shipped,invoiced});
+        }else{
+          Object.assign(existing,statusFields);
+        }
         updated++;
       }
       else{db.salesOrders.push({id:db.nextId.salesOrders++,...payload});added++;}
@@ -18899,8 +18928,14 @@ async function refetchShopifyOrder(shopifyOrderId, opts){
     _pruneStalePendingMappings();
     const existing=db.salesOrders.find(s=>String(s.shopifyOrderId)===String(ord.id)||(s.soNo===soNo&&s.shopifyOrderId));
     let action;
-    if(existing){const{items:_,...statusFields}=payload;Object.assign(existing,statusFields);action='updated';}
-    else{db.salesOrders.push({id:db.nextId.salesOrders++,...payload});action='added';}
+    if(existing){
+      const{items:_,amount:_a,subtotal:_s,totalDiscount:_td,shippingTotal:_st,...statusFields}=payload;
+      if(existing.userEdited){
+        const{payment,packed,shipped,invoiced}=statusFields;
+        Object.assign(existing,{payment,packed,shipped,invoiced});
+      }else{Object.assign(existing,statusFields);}
+      action='updated';
+    }else{db.salesOrders.push({id:db.nextId.salesOrders++,...payload});action='added';}
     saveDB();
     if(statusEl)statusEl.innerHTML=`<span style="color:var(--success)">✓ ${soNo} ${action} successfully</span>`;
     addSyncLog(`✓ Re-fetch done — ${soNo} ${action}`);
@@ -20706,8 +20741,12 @@ async function syncWalmartOrders(igId){
       const orderDate=ord.orderDate?new Date(typeof ord.orderDate==='number'?ord.orderDate:ord.orderDate).toISOString().substring(0,10):new Date().toISOString().substring(0,10);
       const payload={soNo,refNo:ord.purchaseOrderId||'',customerId:walmartCust.id,status:'Confirmed',invoiced:'Not Invoiced',payment:'Unpaid',packed:'Not Packed',shipped:'Not Shipped',amount:resolvedItems.reduce((s,l)=>s+l.amount,0),deliveryMethod:'Walmart',channel:'Walmart',warehouseId:1,date:orderDate,items:resolvedItems,walmartOrderId:ord.purchaseOrderId,...shipTo};
       const existing=db.salesOrders.find(s=>s.walmartOrderId===ord.purchaseOrderId||s.soNo===soNo);
-      if(existing){const{items:_,...statusFields}=payload;Object.assign(existing,statusFields);updated++;}
-      else{db.salesOrders.push({id:db.nextId.salesOrders++,...payload});added++;}
+      if(existing){
+        const{items:_,amount:_a,subtotal:_s,totalDiscount:_td,shippingTotal:_st,...statusFields}=payload;
+        if(existing.userEdited){const{payment,packed,shipped,invoiced}=statusFields;Object.assign(existing,{payment,packed,shipped,invoiced});}
+        else{Object.assign(existing,statusFields);}
+        updated++;
+      }else{db.salesOrders.push({id:db.nextId.salesOrders++,...payload});added++;}
     });
 
     db.walmart.lastSync.orders=now;
