@@ -12051,12 +12051,15 @@ function openSOPage(data){
       // Set item search input
       const srchInp=document.getElementById(`so-item-inp-${idx}`);
       if(srchInp&&li.itemId){
-        let it=[...(db.items||[]),...(db.compositeItems||[])].find(i=>String(i.id)===String(li.itemId));
-        const label=it?`${it.name}${it.sku?' ['+it.sku+']':''}`:( li.itemName||`Item #${li.itemId}`);
+        // Use stored itemSrc to look in the correct array first — prevents ID collisions
+        const _lsrc=li.itemSrc||'items';
+        const _lpri=_lsrc==='compositeItems'?(db.compositeItems||[]):(db.items||[]);
+        const _lsec=_lsrc==='compositeItems'?(db.items||[]):(db.compositeItems||[]);
+        let it=_lpri.find(i=>String(i.id)===String(li.itemId))||_lsec.find(i=>String(i.id)===String(li.itemId))||null;
         srchInp.value=it?it.name:(li.itemName||`Item #${li.itemId}`);
         srchInp.dataset.itemId=li.itemId;
         srchInp.dataset.itemName=it?it.name:(li.itemName||'');
-        srchInp.dataset.itemSrc=it&&(db.compositeItems||[]).find(i=>String(i.id)===String(it.id))?'compositeItems':'items';
+        srchInp.dataset.itemSrc=_lsrc;
         srchInp.classList.add('has-value');
         // Visual warning if item still unresolved or is assembly component
         if(!it||(it&&isAssemblyComponent(it))){
@@ -16921,7 +16924,7 @@ function showSODetail(id){
         const _resolvedSrc=li.itemSrc||'items';
         const _pool=_resolvedSrc==='compositeItems'?(db.compositeItems||[]):db.items;
         const _alt=_resolvedSrc==='compositeItems'?db.items:(db.compositeItems||[]);
-        it=_pool.find(i=>i.id===li.itemId)||_alt.find(i=>i.id===li.itemId)||null;
+        it=_pool.find(i=>String(i.id)===String(li.itemId))||_alt.find(i=>String(i.id)===String(li.itemId))||null;
       }
     }
     // For manual orders, itemName is authoritative. For Shopify/external, prefer resolved item name.
