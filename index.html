@@ -675,7 +675,7 @@ window.addEventListener('unhandledrejection', function(e) {
     </div>
     <div style="overflow-x:auto;margin:-1px"><table style="min-width:900px"><thead><tr>
       <th style="width:32px"><input type="checkbox" id="so-select-all" title="Select all" onclick="soToggleSelectAll(this.checked)" style="cursor:pointer"></th>
-      <th data-sort="date">Date</th><th data-sort="soNo">SO#</th><th data-sort="refNo">Ref#</th><th data-sort="customer">Customer</th><th data-sort="source">Source</th><th data-sort="status">Status</th><th data-sort="packed">Packed</th><th data-sort="shipped">Shipped</th><th data-sort="amount">Amount</th><th style="width:140px">Actions</th>
+      <th data-sort="date" onclick="soSort('date')">Date</th><th data-sort="soNo" onclick="soSort('soNo')">SO#</th><th data-sort="refNo" onclick="soSort('refNo')">Ref#</th><th data-sort="customer" onclick="soSort('customer')">Customer</th><th data-sort="source" onclick="soSort('source')">Source</th><th data-sort="status" onclick="soSort('status')">Status</th><th data-sort="packed" onclick="soSort('packed')">Packed</th><th data-sort="shipped" onclick="soSort('shipped')">Shipped</th><th data-sort="amount" onclick="soSort('amount')">Amount</th><th style="width:140px">Actions</th>
     </tr></thead><tbody id="so-table"></tbody></table></div>
   </div>
 </div>
@@ -4715,6 +4715,12 @@ function renderSalesOrders(){
     });
   }
   soUpdateBatchBar();
+}
+
+function soSort(key){
+  const s=getSortState('sales-orders');
+  sortStates['sales-orders']={field:key,dir:s.field===key?(s.dir==='asc'?'desc':'asc'):'asc'};
+  renderSalesOrders();
 }
 
 let _soLastAutoSync=0;
