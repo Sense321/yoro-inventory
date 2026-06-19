@@ -17060,7 +17060,46 @@ ${(()=>{
   const refetchBtn=so.shopifyOrderId?`<button class="btn btn-outline btn-sm" id="so-refetch-btn-${so.id}" onclick="(async()=>{const b=document.getElementById('so-refetch-btn-${so.id}');if(b){b.disabled=true;b.textContent='Fetching…';}const s=document.createElement('div');s.id='so-refetch-status-${so.id}';s.style='font-size:11px;color:var(--text-light);margin-top:6px;width:100%;text-align:right';const pa=document.getElementById('detail-panel-actions');if(pa){pa.parentNode.insertBefore(s,pa.nextSibling);}await refetchShopifyOrder(${so.shopifyOrderId},{statusEl:s,btnEl:b,refreshSOId:${so.id}});if(b&&!b.disabled){b.textContent='🔄 Re-fetch';}})()">🔄 Re-fetch</button>`:'';
   const walmartTrackBtn=so.walmartOrderId?`<button class="btn btn-outline btn-sm" id="walmart-track-btn-${so.id}" onclick="(async()=>{const b=document.getElementById('walmart-track-btn-${so.id}');if(b){b.disabled=true;b.textContent='Updating…';}try{await syncWalmartOrderTracking(${so.id});}finally{if(b){b.disabled=false;b.textContent='📦 → Walmart';}}})()">📦 → Walmart</button>`:'';
   const unpackBtn=(so.packed==='Packed'&&so.shipped!=='Shipped')?`<button class="btn btn-outline btn-sm" onclick="unpackOrder(${so.id})" style="color:#dc2626;border-color:#fca5a5" title="Restore inventory and unpack">↩ Unpack</button>`:'';
-  openDetailPanel(so.soNo,body,`<button class="btn btn-outline btn-sm" onclick="closeDetailPanel()">Close</button><button class="btn btn-outline btn-sm" onclick="printSalesOrder(${so.id})">🖨 Print SO</button>${refetchBtn}${walmartTrackBtn}${unpackBtn}<button class="btn btn-primary btn-sm" onclick="closeDetailPanel();openSOPage(db.salesOrders.find(o=>o.id===${so.id}))">✏️ Edit</button>`);
+  openDetailPanel(so.soNo,body,`<button class="btn btn-outline btn-sm" onclick="closeDetailPanel()">Close</button><button class="btn btn-outline btn-sm" onclick="printSalesOrder(${so.id})">🖨 Print SO</button>${refetchBtn}${walmartTrackBtn}${unpackBtn}<button class="btn btn-outline btn-sm" onclick="closeDetailPanel();copySOOrder(${so.id})" title="Create a new order copied from this one">⧉ Copy</button><button class="btn btn-primary btn-sm" onclick="closeDetailPanel();openSOPage(db.salesOrders.find(o=>o.id===${so.id}))">✏️ Edit</button>`);
+}
+
+function copySOOrder(id){
+  const src=db.salesOrders.find(o=>o.id===id);if(!src)return;
+  // Build a clean copy: keep customer, items, financials — strip order-specific IDs
+  const copy={
+    customerId:src.customerId,
+    customerName:src.customerName,
+    branch:src.branch,
+    sourceOfSupply:src.sourceOfSupply,
+    date:new Date().toISOString().slice(0,10),
+    shipmentDate:src.shipmentDate||'',
+    shipDate:src.shipDate||'',
+    terms:src.terms||'Due on Receipt',
+    deliveryMethod:src.deliveryMethod||'',
+    salesperson:src.salesperson||'',
+    warehouseId:src.warehouseId||'',
+    customerNotes:src.customerNotes||'',
+    termsConditions:src.termsConditions||'',
+    shipToName:src.shipToName||'',
+    shipToAddress:src.shipToAddress||'',
+    shipToAddress2:src.shipToAddress2||'',
+    shipToCity:src.shipToCity||'',
+    shipToState:src.shipToState||'',
+    shipToZip:src.shipToZip||'',
+    shipToCountry:src.shipToCountry||'',
+    shipToPhone:src.shipToPhone||'',
+    shipToEmail:src.shipToEmail||'',
+    items:(src.items||src.lines||[]).map(li=>({...li})),
+    discountPct:src.discountPct||0,
+    discountType:src.discountType||'pct',
+    totalDiscount:src.totalDiscount||0,
+    shippingTotal:src.shippingTotal||0,
+    adjustment:src.adjustment||0,
+    subtotal:src.subtotal||0,
+    amount:src.amount||0,
+    total:src.total||0
+  };
+  openSOPage(copy);
 }
 
 function packOrder(soId){
