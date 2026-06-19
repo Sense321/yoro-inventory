@@ -3040,9 +3040,9 @@ async function _flushSaveToServer(_isRetry){
           _saving=false; // allow the retry to acquire the lock
           return await _flushSaveToServer(true);
         }
-        // Retry also hit 409 — fall back to full server reload as last resort
-        await loadDBFromServer();
-        if(!_isFlyoutOpen())renderCurrentView();
+        // Retry also hit 409 — update _v once more but keep local data intact
+        try{const gr2=await fetch('/db',{headers:authHeaders()});if(gr2.ok){const gd2=await gr2.json();if(gd2._v)db._v=gd2._v;}}catch(e3){}
+        _showSaveFail();
       }
       else{_showSaveFail();}
       return false;
@@ -16930,8 +16930,8 @@ function showSODetail(id){
         it=_pool.find(i=>String(i.id)===String(li.itemId))||_alt.find(i=>String(i.id)===String(li.itemId))||null;
       }
     }
-    // For manual or user-edited orders, stored itemName is authoritative — no lookup override
-    const name=(isManualSO||so.userEdited)?(li.itemName||it?.name||'?'):(it?.name||li.itemName||li.shopifyTitle||'?');
+    // Stored itemName is always authoritative — set by user's picker or sync mapping
+    const name=li.itemName||it?.name||li.shopifyTitle||'?';
     const lineDiscount=parseFloat(li.lineDiscount||0);
     const isShipping=!!li.isShipping;
     const noSkuItem=!it&&li.shopifySku&&li.shopifySku.startsWith('[no-sku:');
@@ -17038,7 +17038,7 @@ ${(()=>{
     <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text-secondary);margin-bottom:4px"><span>Subtotal</span><span>${fmt(sub)}</span></div>
     ${disc>0?`<div style="display:flex;justify-content:space-between;font-size:13px;color:#dc2626;margin-bottom:4px"><span>${discLabel}</span><span>-${fmt(disc)}</span></div>`:''}
     ${ship>0?`<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text-secondary);margin-bottom:4px"><span>Shipping</span><span>${fmt(ship)}</span></div>`:''}
-    <div style="display:flex;justify-content:space-between;font-size:14px;font-weight:700;margin-top:6px;border-top:1px solid var(--border);padding-top:6px"><span>Total</span><span>${fmt(so.amount||soLines.reduce((s,l)=>s+(parseFloat(l.amount)||0),0))}</span></div>
+    <div style="display:flex;justify-content:space-between;font-size:14px;font-weight:700;margin-top:6px;border-top:1px solid var(--border);padding-top:6px"><span>Total</span><span>${fmt(so.amount!=null?so.amount:soLines.reduce((s,l)=>s+(parseFloat(l.amount)||0),0))}</span></div>
   </div>`;
 })()}`;
   const refetchBtn=so.shopifyOrderId?`<button class="btn btn-outline btn-sm" id="so-refetch-btn-${so.id}" onclick="(async()=>{const b=document.getElementById('so-refetch-btn-${so.id}');if(b){b.disabled=true;b.textContent='Fetching…';}const s=document.createElement('div');s.id='so-refetch-status-${so.id}';s.style='font-size:11px;color:var(--text-light);margin-top:6px;width:100%;text-align:right';const pa=document.getElementById('detail-panel-actions');if(pa){pa.parentNode.insertBefore(s,pa.nextSibling);}await refetchShopifyOrder(${so.shopifyOrderId},{statusEl:s,btnEl:b,refreshSOId:${so.id}});if(b&&!b.disabled){b.textContent='🔄 Re-fetch';}})()">🔄 Re-fetch</button>`:'';
